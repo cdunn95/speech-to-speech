@@ -128,7 +128,7 @@ def _encode_mp3(audio: np.ndarray, sample_rate: int) -> bytes:
         enc.set_in_sample_rate(sample_rate)
         enc.set_channels(1)
         enc.set_quality(2)
-        return enc.encode(pcm) + enc.flush()
+        return bytes(enc.encode(pcm) + enc.flush())
     except ImportError:
         pass
 
