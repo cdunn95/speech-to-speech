@@ -53,4 +53,4 @@ RUN MAX_JOBS=4 pip install /tmp/flash-attention --no-build-isolation -v \
 
 WORKDIR /app
 
-CMD ["speech-to-speech"]
+CMD ["speech-to-speech", "serve", "--host", "0.0.0.0"]
