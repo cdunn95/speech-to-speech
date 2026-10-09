@@ -380,8 +380,13 @@ def _build_handlers(
     speculative_turns: SpeculativeTurnTracker,
     cancel_scope: CancelScope,
     pipeline_index: int,
-) -> list[Any]:
-    """Build a handler chain: VAD → STT/AudioInput → LM → TTS."""
+) -> tuple[list[Any], Any, Any]:
+    """Build a handler chain: VAD → STT/AudioInput → LM → TTS.
+
+    Returns ``(handlers, stt_handler, tts_handler)`` where *handlers* is the
+    full chain and the last two elements are direct references to the STT and
+    TTS handlers for use by the OpenAI-compatible audio API engine.
+    """
     from speech_to_speech.LLM.lm_output_processor import LMOutputProcessor
 
     vad = VADHandler(
@@ -504,7 +509,7 @@ def _build_handlers(
         tts_context,
     )
 
-    return [vad, *side_handlers, *speech_input_handlers, lm, lm_processor, tts]
+    return [vad, *side_handlers, *speech_input_handlers, lm, lm_processor, tts], stt_handler, tts
 
 
 def _stt_session_languages(selection: BackendSelection, handler: Any) -> set[str] | None:
@@ -579,7 +584,7 @@ def _build_pipeline_unit(
         vad_kw.enable_realtime_transcription = True
         vad_kw.realtime_processing_pause = module_kwargs.live_transcription_update_interval
 
-    handlers = _build_handlers(
+    handlers, stt_handler, tts = _build_handlers(
         stop_event=stop_event,
         should_listen=should_listen,
         recv_audio_chunks_queue=recv_audio_chunks_queue,
@@ -634,6 +639,8 @@ def _build_pipeline_unit(
         text_output_queue=text_output_queue,
         text_prompt_queue=text_prompt_queue,
         handlers=handlers,
+        stt_handler=stt_handler,
+        tts_handler=tts,
     )
 
 
@@ -644,6 +651,8 @@ def build_pipeline(
     host: str | None = None,
 ) -> ThreadManager:
     """Build a pool of pipeline units behind one server."""
+    from speech_to_speech.api.openai_audio.audio_engine import AudioAPIEngine
+    from speech_to_speech.api.openai_audio.logging_config import setup_audio_api_logging
     from speech_to_speech.api.openai_realtime.server import RealtimeServer
 
     module_kwargs = args.module_kwargs
@@ -660,6 +669,18 @@ def build_pipeline(
         for index in range(module_kwargs.num_pipelines)
     ]
 
+    # Create the shared AudioAPIEngine from the first pipeline unit's handlers.
+    # All units share the same model architecture; the engine serialises
+    # concurrent API requests with a lock so only one inference runs at a time.
+    audio_api_engine = AudioAPIEngine(
+        stt_handler=pool[0].stt_handler,
+        tts_handler=pool[0].tts_handler,
+        sample_rate=args.vad_handler_kwargs.sample_rate,
+    )
+
+    # Initialise file-based logging to ~/api-logs/
+    setup_audio_api_logging()
+
     server = RealtimeServer(
         stop_event=stop_event,
         pool=pool,
@@ -668,6 +689,7 @@ def build_pipeline(
         llm_proxy_config=(
             build_llm_proxy_config(module_kwargs, args.llm_backend) if module_kwargs.enable_llm_proxy else None
         ),
+        audio_api_engine=audio_api_engine,
     )
 
     handlers: list[Any] = []
