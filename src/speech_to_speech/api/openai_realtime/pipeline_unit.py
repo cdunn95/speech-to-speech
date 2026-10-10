@@ -73,4 +73,10 @@ class PipelineUnit(BaseModel):
     text_prompt_queue: Queue
     handlers: list[Any]
 
+    # Direct references to STT/TTS handlers for the OpenAI-compatible audio API.
+    # These allow the AudioAPIEngine to call process() directly, bypassing the
+    # queue-based pipeline, while sharing the same loaded models.
+    stt_handler: Optional[Any] = None
+    tts_handler: Optional[Any] = None
+
     session: Optional[SessionState] = None
