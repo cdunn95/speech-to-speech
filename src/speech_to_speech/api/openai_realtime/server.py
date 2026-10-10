@@ -38,7 +38,19 @@ class RealtimeServer:
 
     def run(self) -> None:
         """Start the FastAPI/uvicorn server (called from a ThreadManager thread)."""
-        app = create_app(pool=self.pool, stop_event=self.stop_event, llm_proxy_config=self.llm_proxy_config)
+        from speech_to_speech.clones.store import CloneStore
+
+        clone_store: CloneStore | None = None
+        try:
+            clone_store = CloneStore()
+        except OSError as e:
+            logger.warning("Voice-clone support disabled (cannot initialise clone store): %s", e)
+        app = create_app(
+            pool=self.pool,
+            stop_event=self.stop_event,
+            llm_proxy_config=self.llm_proxy_config,
+            clone_store=clone_store,
+        )
 
         logger.info(
             f"OpenAI Realtime API starting on ws://{self.host}:{self.port}/v1/realtime (pool size {len(self.pool)})"

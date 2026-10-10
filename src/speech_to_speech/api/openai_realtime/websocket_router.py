@@ -5,9 +5,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from queue import Empty, Queue
 from threading import Event as ThreadingEvent
-from typing import Any, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from speech_to_speech.clones.store import CloneStore
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from openai.types.realtime import (
     ConversationItemCreateEvent,
@@ -504,6 +507,7 @@ def create_app(
     pool: list[PipelineUnit],
     stop_event: ThreadingEvent,
     llm_proxy_config: LLMProxyConfig | None = None,
+    clone_store: "CloneStore | None" = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -529,6 +533,11 @@ def create_app(
     app = FastAPI(lifespan=lifespan)
 
     llm_proxy_usage = mount_llm_proxy(app, llm_proxy_config)
+
+    if clone_store is not None:
+        from speech_to_speech.api.openai_realtime.clone_router import create_clone_router
+
+        app.include_router(create_clone_router(clone_store, pool))
 
     def _claim_unit(transport: SessionTransport | None) -> PipelineUnit | None:
         """Atomically (between asyncio yield points) reserve the first idle unit.
