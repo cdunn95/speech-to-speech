@@ -69,7 +69,18 @@ class AudioAPIEngine:
 
     @property
     def has_stt(self) -> bool:
-        return self._stt_handler is not None
+        """True when a real STT inference handler is available.
+
+        Returns False for ``None`` and for the ``AudioInputNotifier``
+        passthrough used when ``--stt none`` is configured.
+        """
+        if self._stt_handler is None:
+            return False
+        # AudioInputNotifier is the passthrough for --stt none; it doesn't
+        # perform inference, it just forwards audio to the LLM queue.
+        from speech_to_speech.LLM.audio_input_notifier import AudioInputNotifier
+
+        return not isinstance(self._stt_handler, AudioInputNotifier)
 
     @property
     def has_tts(self) -> bool:
@@ -88,7 +99,8 @@ class AudioAPIEngine:
         prompt: str | None = None,
     ) -> TranscriptionResult:
         """Run one STT inference on *audio* (float32, mono, 16 kHz)."""
-        if not self.has_stt:
+        stt_handler = self._stt_handler
+        if stt_handler is None:
             raise RuntimeError("No STT handler available (stt backend is 'none')")
 
         started = perf_counter()
@@ -102,7 +114,7 @@ class AudioAPIEngine:
 
         with self._stt_lock:
             vad_audio = VADAudio(audio=audio, mode="final")
-            results = list(self._stt_handler.process(vad_audio))
+            results = list(stt_handler.process(vad_audio))
 
         elapsed = perf_counter() - started
 
@@ -132,7 +144,8 @@ class AudioAPIEngine:
         language: str | None = None,
     ) -> tuple[np.ndarray, int]:
         """Run one TTS inference.  Returns ``(int16_audio, sample_rate)``."""
-        if not self.has_tts:
+        tts_handler = self._tts_handler
+        if tts_handler is None:
             raise RuntimeError("No TTS handler available")
 
         started = perf_counter()
@@ -146,7 +159,7 @@ class AudioAPIEngine:
         with self._tts_lock:
             tts_input = TTSInput(text=text, language_code=language)
             chunks: list[np.ndarray] = []
-            for chunk in self._tts_handler.process(tts_input):
+            for chunk in tts_handler.process(tts_input):
                 arr = _extract_audio(chunk)
                 if arr is not None and arr.size:
                     chunks.append(arr)

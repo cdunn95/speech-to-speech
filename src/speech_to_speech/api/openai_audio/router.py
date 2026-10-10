@@ -43,6 +43,11 @@ _CONTENT_TYPE_BY_FORMAT: dict[str, str] = {
 }
 
 
+def _safe(value: object) -> str:
+    """Sanitize an untrusted value for safe interpolation into log lines (CWE-117)."""
+    return str(value).replace("\r", "").replace("\n", "")[:256]
+
+
 def _openai_error(
     status: int, message: str, err_type: str, param: str | None = None, code: str | None = None
 ) -> JSONResponse:
@@ -240,15 +245,15 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
         if effective_language is None and languages:
             effective_language = languages[0]
 
-        # Sanitize filename for logging (CWE-117: log injection)
-        safe_filename = (file.filename or "unknown").replace("\n", "").replace("\r", "")[:256]
+        # Sanitize untrusted fields for logging (CWE-117: log injection)
+        safe_filename = _safe(file.filename or "unknown")
 
         api_log.info(
             "TRANSCRIPTION request=%s model=%s language=%s format=%s file=%s",
             request_id,
-            model,
-            effective_language,
-            response_format,
+            _safe(model),
+            _safe(effective_language),
+            _safe(response_format),
             safe_filename,
         )
 
@@ -256,9 +261,9 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
             "START request=%s file=%s model=%s language=%s format=%s stream=%s",
             request_id,
             safe_filename,
-            model,
-            effective_language,
-            response_format,
+            _safe(model),
+            _safe(effective_language),
+            _safe(response_format),
             stream,
         )
 
@@ -355,22 +360,22 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
         request_id = str(uuid.uuid4())
         started = perf_counter()
 
-        # Sanitize filename for logging (CWE-117: log injection)
-        safe_filename = (file.filename or "unknown").replace("\n", "").replace("\r", "")[:256]
+        # Sanitize untrusted fields for logging (CWE-117: log injection)
+        safe_filename = _safe(file.filename or "unknown")
 
         api_log.info(
             "TRANSLATION request=%s model=%s format=%s file=%s",
             request_id,
-            model,
-            response_format,
+            _safe(model),
+            _safe(response_format),
             safe_filename,
         )
         translat_log.info(
             "START request=%s file=%s model=%s format=%s",
             request_id,
             safe_filename,
-            model,
-            response_format,
+            _safe(model),
+            _safe(response_format),
         )
 
         try:
@@ -489,20 +494,20 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
         api_log.info(
             "SPEECH request=%s model=%s voice=%s format=%s text_len=%d speed=%s",
             request_id,
-            model,
-            voice,
-            response_format,
+            _safe(model),
+            _safe(voice),
+            _safe(response_format),
             len(text),
-            speed,
+            _safe(speed),
         )
         speech_log.info(
             "START request=%s model=%s voice=%s format=%s text_len=%d speed=%s instructions=%s",
             request_id,
-            model,
-            voice,
-            response_format,
+            _safe(model),
+            _safe(voice),
+            _safe(response_format),
             len(text),
-            speed,
+            _safe(speed),
             "(set)" if instructions else None,
         )
 
