@@ -240,16 +240,17 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
         if effective_language is None and languages:
             effective_language = languages[0]
 
+        # Sanitize filename for logging (CWE-117: log injection)
+        safe_filename = (file.filename or "unknown").replace("\n", "").replace("\r", "")[:256]
+
         api_log.info(
             "TRANSCRIPTION request=%s model=%s language=%s format=%s file=%s",
             request_id,
             model,
             effective_language,
             response_format,
-            file.filename,
+            safe_filename,
         )
-        # Sanitize filename for logging (CWE-117: log injection)
-        safe_filename = (file.filename or "unknown").replace("\n", "").replace("\r", "")[:256]
 
         trans_log.info(
             "START request=%s file=%s model=%s language=%s format=%s stream=%s",

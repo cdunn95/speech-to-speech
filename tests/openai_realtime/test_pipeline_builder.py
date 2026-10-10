@@ -20,7 +20,7 @@ def test_serve_builds_pipeline_unit_pool(monkeypatch):
     args = _default_args()
     args.module_kwargs.num_pipelines = 2
     unit_handlers = [object(), object()]
-    units = [SimpleNamespace(handlers=[handler]) for handler in unit_handlers]
+    units = [SimpleNamespace(handlers=[handler], stt_handler=None, tts_handler=None) for handler in unit_handlers]
     calls = []
 
     def fake_build_pipeline_unit(**kwargs):
@@ -45,7 +45,7 @@ def test_local_composes_loopback_client_with_same_server_builder(monkeypatch):
     args.realtime_server_kwargs.port = 9876
     args.local_audio_kwargs.local_audio_playback_buffer_ms = 240
     pipeline_handler = object()
-    unit = SimpleNamespace(handlers=[pipeline_handler])
+    unit = SimpleNamespace(handlers=[pipeline_handler], stt_handler=None, tts_handler=None)
     monkeypatch.setattr("speech_to_speech.s2s_pipeline._build_pipeline_unit", lambda **_kwargs: unit)
 
     manager = build_local_pipeline(args, Event())
@@ -64,7 +64,7 @@ def test_local_composes_loopback_client_with_same_server_builder(monkeypatch):
 
 
 def test_local_resolves_backend_specific_playback_buffer_defaults(monkeypatch):
-    unit = SimpleNamespace(handlers=[object()])
+    unit = SimpleNamespace(handlers=[object()], stt_handler=None, tts_handler=None)
     monkeypatch.setattr("speech_to_speech.s2s_pipeline._build_pipeline_unit", lambda **_kwargs: unit)
 
     cases = [
