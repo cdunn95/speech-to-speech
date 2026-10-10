@@ -216,6 +216,16 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         self._initial_ref_spk = self.ref_spk
         self._initial_ref_rvq = self.ref_rvq
 
+        # Factory (pre-clone) voice state. The clone manager may swap in a
+        # voice-clone reference at runtime; these values let us revert cleanly.
+        self._factory_speaker = self.speaker
+        self._factory_ref_audio = self.ref_audio
+        self._factory_ref_text = self.ref_text
+        self._factory_ref_spk = self.ref_spk
+        self._factory_ref_rvq = self.ref_rvq
+        # Atomic signal for active clone reference (None = no clone routed).
+        self._clone_ref: tuple[str | Path, str] | None = None
+
         self.warmup()
 
     def _setup_faster(self, model_name: str, dtype: Any, attn_implementation: str, backend: str) -> None:
@@ -461,6 +471,11 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         return None
 
     def _has_voice_clone_reference(self) -> bool:
+        # _clone_ref is the atomic signal set by set_clone_reference(); checking
+        # it first avoids observing a half-written state from the individual
+        # field assignments that follow.
+        if getattr(self, "_clone_ref", None) is not None:
+            return True
         return bool(self.ref_audio or getattr(self, "ref_spk", None))
 
     def _clear_cached_voice_reference(self) -> None:
@@ -531,6 +546,12 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         runtime_config: RuntimeConfig | None = None,
         response: RealtimeResponseCreateParams | None = None,
     ) -> None:
+        # A routed voice clone takes precedence over per-session voice overrides.
+        # Without this guard, any client that sets `voice` in session.update or
+        # response.create would wipe the clone reference on the next utterance.
+        if getattr(self, "_clone_ref", None) is not None:
+            return
+
         session_voice: Optional[str] = None
         if response and response.audio and response.audio.output:
             resp_voice = response.audio.output.voice
@@ -1038,6 +1059,52 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             ),
             label="voice_design",
         )
+
+    def set_clone_reference(self, ref_audio: str | Path, ref_text: str) -> None:
+        """Route synthesis to a voice-clone reference (from the clone manager).
+
+        Sets the reference audio and its transcription so the handler switches to
+        voice-clone mode. The values are also written to the ``_initial_*`` state
+        so the clone survives per-session resets (``on_session_end``).
+
+        Thread-safety: the individual field writes below are not atomic as a
+        group, but ``_clone_ref`` is published last as a single atomic store.
+        Readers (``_has_voice_clone_reference``, ``_apply_session_voice_override``)
+        check ``_clone_ref`` first, so they never act on a half-written state.
+        """
+        # Validate the file exists to turn a silent runtime failure into an
+        # actionable error at apply time.
+        audio_path = Path(ref_audio)
+        if not audio_path.is_file():
+            raise FileNotFoundError(f"Clone reference audio not found: {audio_path}")
+
+        self.ref_text = ref_text
+        self.ref_audio = ref_audio
+        self._initial_ref_audio = ref_audio
+        self.ref_spk = None
+        self.ref_rvq = None
+        self._initial_ref_spk = None
+        self._initial_ref_rvq = None
+        # Publish the clone as active with a single atomic store. Readers gate
+        # on this value, so it must be the last write.
+        self._clone_ref = (ref_audio, ref_text)
+        logger.info("Qwen3-TTS: applied voice-clone reference %s", ref_audio)
+
+    def clear_clone_reference(self) -> None:
+        """Revert to the factory (pre-clone) voice configuration."""
+        # Deactivate the clone first so concurrent readers immediately stop
+        # routing to the (about-to-be-cleared) reference.
+        self._clone_ref = None
+        self.ref_audio = self._factory_ref_audio
+        self.ref_text = self._factory_ref_text
+        self.speaker = self._factory_speaker
+        self.ref_spk = self._factory_ref_spk
+        self.ref_rvq = self._factory_ref_rvq
+        self._initial_ref_audio = self._factory_ref_audio
+        self._initial_ref_spk = self._factory_ref_spk
+        self._initial_ref_rvq = self._factory_ref_rvq
+        self._initial_speaker = self._factory_speaker
+        logger.info("Qwen3-TTS: cleared voice-clone reference, reverted to factory voice")
 
     def on_session_end(self) -> None:
         self.speaker = self._initial_speaker

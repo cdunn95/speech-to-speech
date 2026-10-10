@@ -41,10 +41,18 @@ class RealtimeServer:
 
     def run(self) -> None:
         """Start the FastAPI/uvicorn server (called from a ThreadManager thread)."""
+        from speech_to_speech.clones.store import CloneStore
+
+        clone_store: CloneStore | None = None
+        try:
+            clone_store = CloneStore()
+        except OSError as e:
+            logger.warning("Voice-clone support disabled (cannot initialise clone store): %s", e)
         app = create_app(
             pool=self.pool,
             stop_event=self.stop_event,
             llm_proxy_config=self.llm_proxy_config,
+            clone_store=clone_store,
             audio_api_engine=self.audio_api_engine,
         )
 
