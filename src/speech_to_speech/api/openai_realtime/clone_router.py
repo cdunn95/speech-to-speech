@@ -129,21 +129,30 @@ def create_clone_router(clone_store: CloneStore, pool: list[Any]) -> APIRouter:
             clone.name,
             applied,
         )
-        return {"status": "success", "id": clone.id, "name": clone.name}
+        result: dict[str, Any] = {"status": "success", "id": clone.id, "name": clone.name}
+        if applied == 0:
+            result["warning"] = (
+                "No TTS handlers support voice cloning. The default is persisted "
+                "but synthesis will use the factory voice."
+            )
+        return result
 
     @router.post("/clone/delete/")
     async def clone_delete(body: CloneRef) -> Any:
         # Clear TTS handler references BEFORE deleting the file so that no
-        # in-flight generation can read a deleted WAV.
-        clone_info = await asyncio.to_thread(clone_store.get, body.clone)
-        if clone_info is None:
+        # in-flight generation can read a deleted WAV. We peek at the default
+        # first; if it matches the clone being deleted, we clear routing before
+        # the store delete unlinks the WAV. The store's `was_default` return is
+        # the authoritative signal — if our pre-read was stale (concurrent
+        # set_default), we clear after the delete as a safety net.
+        target = await asyncio.to_thread(clone_store.get, body.clone)
+        if target is None:
             return _error(f"Clone not found: {body.clone!r}", 404)
 
-        # Check if this is the default so we can clear routing first.
         current_default = await asyncio.to_thread(clone_store.get_default)
-        is_default = current_default is not None and current_default.id == clone_info.id
+        is_default_pre = current_default is not None and current_default.id == target.id
 
-        if is_default:
+        if is_default_pre:
             _apply_default(None)
 
         try:
@@ -151,6 +160,11 @@ def create_clone_router(clone_store: CloneStore, pool: list[Any]) -> APIRouter:
         except CloneError as e:
             status_code = 404 if isinstance(e, CloneNotFoundError) else 400
             return _error(str(e), status_code)
+
+        # Safety net: if the pre-read missed it (concurrent set_default between
+        # our get_default and delete), clear now.
+        if was_default and not is_default_pre:
+            _apply_default(None)
 
         logger.info("Deleted voice clone id=%d name=%r", clone.id, clone.name)
         return {"status": "success", "id": clone.id, "name": clone.name}

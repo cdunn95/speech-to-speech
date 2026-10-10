@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -242,12 +241,15 @@ class CloneStore:
         if description is not None and len(description) > MAX_DESCRIPTION_LENGTH:
             raise CloneError(f"Description must be at most {MAX_DESCRIPTION_LENGTH} characters.")
 
-        # Phase 1: under the lock, check name uniqueness and allocate an ID.
+        # Phase 1: under the lock, check name uniqueness and reserve an ID.
+        # The ID is incremented here (not in phase 3) so concurrent creates
+        # each get a unique ID. If phase 2 fails the ID is simply skipped.
         with self._lock:
             for meta in self._state["clones"]:
                 if str(meta["name"]).lower() == name.lower():
                     raise CloneExistsError(f"A clone named '{name}' already exists.")
             clone_id = int(self._state["next_id"])
+            self._state["next_id"] = clone_id + 1
 
         # Phase 2: decode audio outside the lock so reads are not blocked.
         audio_path = self._audio_path_for(clone_id)
@@ -273,7 +275,6 @@ class CloneStore:
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
             self._state["clones"].append(clone.to_meta_dict())
-            self._state["next_id"] = clone_id + 1
             self._save_state()
             return clone
 

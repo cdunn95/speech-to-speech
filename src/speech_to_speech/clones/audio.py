@@ -65,7 +65,7 @@ def convert_to_wav(
         except Exception as e:  # noqa: BLE001 - surface a uniform clone error
             logger.warning("Failed to decode uploaded audio: %s", e, exc_info=True)
             raise CloneAudioError(
-                "The uploaded audio could not be decoded. Please upload a valid MP3 file (1–60 s)."
+                "The uploaded audio could not be decoded. Please upload a valid MP3 file (2–20 s)."
             ) from e
 
         audio = np.asarray(audio, dtype=np.float32)
