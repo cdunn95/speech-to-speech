@@ -672,14 +672,18 @@ def build_pipeline(
     # Create the shared AudioAPIEngine from the first pipeline unit's handlers.
     # All units share the same model architecture; the engine serialises
     # concurrent API requests with a lock so only one inference runs at a time.
-    audio_api_engine = AudioAPIEngine(
-        stt_handler=pool[0].stt_handler,
-        tts_handler=pool[0].tts_handler,
-        sample_rate=args.vad_handler_kwargs.sample_rate,
-    )
-
-    # Initialise file-based logging to ~/api-logs/
-    setup_audio_api_logging()
+    # Known limitation: the engine shares handler instances with the realtime
+    # pipeline. Concurrent API + realtime inference on the same handler is not
+    # safe for all backends. A future revision will allocate dedicated handlers.
+    audio_api_engine = None
+    if module_kwargs.enable_audio_api:
+        audio_api_engine = AudioAPIEngine(
+            stt_handler=pool[0].stt_handler,
+            tts_handler=pool[0].tts_handler,
+            sample_rate=args.vad_handler_kwargs.sample_rate,
+        )
+        # Initialise file-based logging to ~/api-logs/
+        setup_audio_api_logging()
 
     server = RealtimeServer(
         stop_event=stop_event,

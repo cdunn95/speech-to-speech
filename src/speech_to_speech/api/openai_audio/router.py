@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import logging
-import struct
 import subprocess
 import uuid
 import wave
@@ -45,7 +43,9 @@ _CONTENT_TYPE_BY_FORMAT: dict[str, str] = {
 }
 
 
-def _openai_error(status: int, message: str, err_type: str, param: str | None = None, code: str | None = None) -> JSONResponse:
+def _openai_error(
+    status: int, message: str, err_type: str, param: str | None = None, code: str | None = None
+) -> JSONResponse:
     """Build an OpenAI-shaped error body."""
     return JSONResponse(
         status_code=status,
@@ -136,10 +136,20 @@ def _encode_mp3(audio: np.ndarray, sample_rate: int) -> bytes:
     try:
         result = subprocess.run(
             [
-                "ffmpeg", "-y",
-                "-f", "s16le", "-ar", str(sample_rate), "-ac", "1",
-                "-i", "pipe:0",
-                "-c:a", "libmp3lame", "-b:a", "128k",
+                "ffmpeg",
+                "-y",
+                "-f",
+                "s16le",
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "-i",
+                "pipe:0",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                "128k",
                 "pipe:1",
             ],
             input=pcm,
@@ -232,11 +242,23 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
 
         api_log.info(
             "TRANSCRIPTION request=%s model=%s language=%s format=%s file=%s",
-            request_id, model, effective_language, response_format, file.filename,
+            request_id,
+            model,
+            effective_language,
+            response_format,
+            file.filename,
         )
+        # Sanitize filename for logging (CWE-117: log injection)
+        safe_filename = (file.filename or "unknown").replace("\n", "").replace("\r", "")[:256]
+
         trans_log.info(
             "START request=%s file=%s model=%s language=%s format=%s stream=%s",
-            request_id, file.filename, model, effective_language, response_format, stream,
+            request_id,
+            safe_filename,
+            model,
+            effective_language,
+            response_format,
+            stream,
         )
 
         try:
@@ -253,19 +275,27 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
                     param="response_format",
                 )
 
-            data = await file.read()
-            file_size = len(data)
-            trans_log.info("RECEIVED request=%s file=%s size=%d bytes", request_id, file.filename, file_size)
+            # Read in bounded chunks to enforce size cap before full allocation (DoS prevention)
+            chunks = []
+            total_size = 0
+            while chunk := await file.read(1024 * 1024):  # 1 MB chunks
+                total_size += len(chunk)
+                if total_size > MAX_FILE_SIZE_BYTES:
+                    return _openai_error(
+                        400,
+                        f"File too large (max {MAX_FILE_SIZE_BYTES} bytes)",
+                        "invalid_request_error",
+                        param="file",
+                        code="file_too_large",
+                    )
+                chunks.append(chunk)
+            data = b"".join(chunks)
+            file_size = total_size
+            trans_log.info("RECEIVED request=%s file=%s size=%d bytes", request_id, safe_filename, file_size)
 
             if file_size == 0:
-                return _openai_error(400, "Uploaded file is empty", "invalid_request_error", param="file", code="empty_file")
-            if file_size > MAX_FILE_SIZE_BYTES:
                 return _openai_error(
-                    400,
-                    f"File too large: {file_size} bytes (max {MAX_FILE_SIZE_BYTES})",
-                    "invalid_request_error",
-                    param="file",
-                    code="file_too_large",
+                    400, "Uploaded file is empty", "invalid_request_error", param="file", code="empty_file"
                 )
 
             if not engine.has_stt:
@@ -283,7 +313,10 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
             duration_s = len(audio) / engine.sample_rate
             trans_log.info(
                 "DECODED request=%s samples=%d duration=%.2fs decode_time=%.3fs",
-                request_id, len(audio), duration_s, decode_s,
+                request_id,
+                len(audio),
+                duration_s,
+                decode_s,
             )
 
             # Infer
@@ -292,7 +325,10 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
 
             trans_log.info(
                 "COMPLETE request=%s text_len=%d language=%s total_time=%.3fs",
-                request_id, len(result.text), result.language, total_s,
+                request_id,
+                len(result.text),
+                result.language,
+                total_s,
             )
             api_log.info("TRANSCRIPTION ok request=%s time=%.3fs", request_id, total_s)
 
@@ -304,7 +340,7 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
             total_s = perf_counter() - started
             error_log.exception("TRANSCRIPTION failed request=%s time=%.3fs", request_id, total_s)
             api_log.error("TRANSCRIPTION failed request=%s error=%s time=%.3fs", request_id, exc, total_s)
-            return _openai_error(500, f"Transcription failed: {exc}", "server_error")
+            return _openai_error(500, f"Transcription failed (request_id={request_id})", "server_error")
 
     # ── POST /v1/audio/translations ──────────────────────────────────
 
@@ -318,17 +354,26 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
         request_id = str(uuid.uuid4())
         started = perf_counter()
 
+        # Sanitize filename for logging (CWE-117: log injection)
+        safe_filename = (file.filename or "unknown").replace("\n", "").replace("\r", "")[:256]
+
         api_log.info(
             "TRANSLATION request=%s model=%s format=%s file=%s",
-            request_id, model, response_format, file.filename,
+            request_id,
+            model,
+            response_format,
+            safe_filename,
         )
         translat_log.info(
             "START request=%s file=%s model=%s format=%s",
-            request_id, file.filename, model, response_format,
+            request_id,
+            safe_filename,
+            model,
+            response_format,
         )
 
         try:
-            if response_format not in SUPPORTED_TRANSCRIPTION_FORMATS - {"diarized_json"}:
+            if response_format not in SUPPORTED_TRANSCRIPTION_FORMATS:
                 return _openai_error(
                     400,
                     f"Unsupported response_format: {response_format!r}",
@@ -336,19 +381,27 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
                     param="response_format",
                 )
 
-            data = await file.read()
-            file_size = len(data)
-            translat_log.info("RECEIVED request=%s file=%s size=%d bytes", request_id, file.filename, file_size)
+            # Read in bounded chunks to enforce size cap before full allocation (DoS prevention)
+            chunks = []
+            total_size = 0
+            while chunk := await file.read(1024 * 1024):  # 1 MB chunks
+                total_size += len(chunk)
+                if total_size > MAX_FILE_SIZE_BYTES:
+                    return _openai_error(
+                        400,
+                        f"File too large (max {MAX_FILE_SIZE_BYTES} bytes)",
+                        "invalid_request_error",
+                        param="file",
+                        code="file_too_large",
+                    )
+                chunks.append(chunk)
+            data = b"".join(chunks)
+            file_size = total_size
+            translat_log.info("RECEIVED request=%s file=%s size=%d bytes", request_id, safe_filename, file_size)
 
             if file_size == 0:
-                return _openai_error(400, "Uploaded file is empty", "invalid_request_error", param="file", code="empty_file")
-            if file_size > MAX_FILE_SIZE_BYTES:
                 return _openai_error(
-                    400,
-                    f"File too large: {file_size} bytes (max {MAX_FILE_SIZE_BYTES})",
-                    "invalid_request_error",
-                    param="file",
-                    code="file_too_large",
+                    400, "Uploaded file is empty", "invalid_request_error", param="file", code="empty_file"
                 )
 
             if not engine.has_stt:
@@ -365,7 +418,10 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
             duration_s = len(audio) / engine.sample_rate
             translat_log.info(
                 "DECODED request=%s samples=%d duration=%.2fs decode_time=%.3fs",
-                request_id, len(audio), duration_s, decode_s,
+                request_id,
+                len(audio),
+                duration_s,
+                decode_s,
             )
 
             # Translation = transcription forced to English.
@@ -374,7 +430,9 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
 
             translat_log.info(
                 "COMPLETE request=%s text_len=%d total_time=%.3fs",
-                request_id, len(result.text), total_s,
+                request_id,
+                len(result.text),
+                total_s,
             )
             api_log.info("TRANSLATION ok request=%s time=%.3fs", request_id, total_s)
 
@@ -386,7 +444,7 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
             total_s = perf_counter() - started
             error_log.exception("TRANSLATION failed request=%s time=%.3fs", request_id, total_s)
             api_log.error("TRANSLATION failed request=%s error=%s time=%.3fs", request_id, exc, total_s)
-            return _openai_error(500, f"Translation failed: {exc}", "server_error")
+            return _openai_error(500, f"Translation failed (request_id={request_id})", "server_error")
 
     # ── POST /v1/audio/speech ────────────────────────────────────────
 
@@ -401,42 +459,53 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
         response_format = request_body.get("response_format", "mp3")
         speed = request_body.get("speed", 1.0)
         instructions = request_body.get("instructions")
-        stream_format = request_body.get("stream_format")
 
         # `voice` may be a string or a custom-voice object {"id": "..."}.
         if isinstance(voice, dict):
             voice = voice.get("id", "alloy")
 
+        # Validate before logging to avoid TypeError on null/non-string input
+        if text is None or not isinstance(text, str):
+            return _openai_error(400, "Input text must be a string", "invalid_request_error", param="input")
+        if not text.strip():
+            return _openai_error(400, "Input text is empty", "invalid_request_error", param="input")
+        if len(text) > MAX_TEXT_LENGTH:
+            return _openai_error(
+                400,
+                f"Input text too long: {len(text)} chars (max {MAX_TEXT_LENGTH})",
+                "invalid_request_error",
+                param="input",
+                code="text_too_long",
+            )
+        if response_format not in SUPPORTED_SPEECH_FORMATS:
+            return _openai_error(
+                400,
+                f"Unsupported response_format: {response_format!r}. Supported: {sorted(SUPPORTED_SPEECH_FORMATS)}",
+                "invalid_request_error",
+                param="response_format",
+            )
+
         api_log.info(
             "SPEECH request=%s model=%s voice=%s format=%s text_len=%d speed=%s",
-            request_id, model, voice, response_format, len(text), speed,
+            request_id,
+            model,
+            voice,
+            response_format,
+            len(text),
+            speed,
         )
         speech_log.info(
             "START request=%s model=%s voice=%s format=%s text_len=%d speed=%s instructions=%s",
-            request_id, model, voice, response_format, len(text), speed,
+            request_id,
+            model,
+            voice,
+            response_format,
+            len(text),
+            speed,
             "(set)" if instructions else None,
         )
 
         try:
-            if not text or not text.strip():
-                return _openai_error(400, "Input text is empty", "invalid_request_error", param="input")
-            if len(text) > MAX_TEXT_LENGTH:
-                return _openai_error(
-                    400,
-                    f"Input text too long: {len(text)} chars (max {MAX_TEXT_LENGTH})",
-                    "invalid_request_error",
-                    param="input",
-                    code="text_too_long",
-                )
-            if response_format not in SUPPORTED_SPEECH_FORMATS:
-                return _openai_error(
-                    400,
-                    f"Unsupported response_format: {response_format!r}. "
-                    f"Supported: {sorted(SUPPORTED_SPEECH_FORMATS)}",
-                    "invalid_request_error",
-                    param="response_format",
-                )
-
             if not engine.has_tts:
                 return _openai_error(
                     501,
@@ -459,7 +528,10 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
 
             speech_log.info(
                 "COMPLETE request=%s audio_bytes=%d format=%s total_time=%.3fs",
-                request_id, len(encoded), response_format, total_s,
+                request_id,
+                len(encoded),
+                response_format,
+                total_s,
             )
             api_log.info("SPEECH ok request=%s bytes=%d time=%.3fs", request_id, len(encoded), total_s)
 
@@ -475,7 +547,7 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
             total_s = perf_counter() - started
             error_log.exception("SPEECH failed request=%s time=%.3fs", request_id, total_s)
             api_log.error("SPEECH failed request=%s error=%s time=%.3fs", request_id, exc, total_s)
-            return _openai_error(500, f"Speech synthesis failed: {exc}", "server_error")
+            return _openai_error(500, f"Speech synthesis failed (request_id={request_id})", "server_error")
 
     return router
 

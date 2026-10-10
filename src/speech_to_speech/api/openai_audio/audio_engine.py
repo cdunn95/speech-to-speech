@@ -19,8 +19,8 @@ import numpy as np
 from speech_to_speech.pipeline.messages import (
     AUDIO_RESPONSE_DONE,
     AudioOutput,
-    TTSInput,
     Transcription,
+    TTSInput,
     VADAudio,
 )
 
