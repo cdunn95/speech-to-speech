@@ -56,6 +56,7 @@ dependencies = [
     "faster-qwen3-tts[ggml]>=0.5.4; platform_system != 'Darwin' and platform_system != 'Windows'",
     "faster-qwen3-tts>=0.5.4; platform_system == 'Windows'",
     "librosa==0.11.0",
+    "lameenc>=1.7",
     "lingua-language-detector>=2.0.2",
     "miniaudio==1.61; platform_system == 'Darwin'",
     "mlx==0.32.3; platform_system == 'Darwin'",

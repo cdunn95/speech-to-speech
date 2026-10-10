@@ -116,7 +116,11 @@ def test_faster_whisper_loaded_languages_control_session_update(monkeypatch, mod
     monkeypatch.setattr(
         s2s_pipeline,
         "_build_handlers",
-        lambda **_kwargs: [SimpleNamespace(), stt_handler, SimpleNamespace(), SimpleNamespace(), SimpleNamespace()],
+        lambda **_kwargs: (
+            [SimpleNamespace(), stt_handler, SimpleNamespace(), SimpleNamespace(), SimpleNamespace()],
+            stt_handler,
+            SimpleNamespace(),
+        ),
     )
     unit = s2s_pipeline._build_pipeline_unit(
         index=0,
@@ -161,7 +165,11 @@ def test_transformers_whisper_session_language_uses_loaded_generation_config(
     monkeypatch.setattr(
         s2s_pipeline,
         "_build_handlers",
-        lambda **_kwargs: [SimpleNamespace(), stt_handler, SimpleNamespace(), SimpleNamespace(), SimpleNamespace()],
+        lambda **_kwargs: (
+            [SimpleNamespace(), stt_handler, SimpleNamespace(), SimpleNamespace(), SimpleNamespace()],
+            stt_handler,
+            SimpleNamespace(),
+        ),
     )
     unit = s2s_pipeline._build_pipeline_unit(
         index=0,
@@ -200,7 +208,11 @@ def test_openai_realtime_stt_auto_reset_is_rejected_only_when_setup_hint_cannot_
     if setup_language is not None:
         cli.extend(["--openai_realtime_stt_language", setup_language])
     args = parse_arguments(cli)
-    monkeypatch.setattr(s2s_pipeline, "_build_handlers", lambda **_kwargs: [SimpleNamespace() for _ in range(5)])
+    monkeypatch.setattr(
+        s2s_pipeline,
+        "_build_handlers",
+        lambda **_kwargs: ([SimpleNamespace() for _ in range(5)], SimpleNamespace(), SimpleNamespace()),
+    )
     unit = s2s_pipeline._build_pipeline_unit(
         index=0,
         stop_event=Event(),
@@ -503,7 +515,7 @@ def test_streaming_stt_backend_is_attached_to_vad_without_changing_notifier_path
     monkeypatch.setattr(s2s_pipeline, "TranscriptionNotifier", DummyNotifier)
     monkeypatch.setattr("speech_to_speech.LLM.lm_output_processor.LMOutputProcessor", DummyHandler)
 
-    handlers = s2s_pipeline._build_handlers(
+    handlers, _stt, _tts = s2s_pipeline._build_handlers(
         stop_event=Event(),
         should_listen=Event(),
         recv_audio_chunks_queue=Queue(),
@@ -555,7 +567,7 @@ def test_new_stt_backend_gets_transcription_notifier_by_default(monkeypatch):
     monkeypatch.setattr(s2s_pipeline, "TranscriptionNotifier", DummyNotifier)
     monkeypatch.setattr("speech_to_speech.LLM.lm_output_processor.LMOutputProcessor", DummyHandler)
 
-    handlers = s2s_pipeline._build_handlers(
+    handlers, _stt, _tts = s2s_pipeline._build_handlers(
         stop_event=Event(),
         should_listen=Event(),
         recv_audio_chunks_queue=Queue(),

@@ -130,3 +130,11 @@ class ModuleArguments:
             "num_pipelines; further connections are rejected. Default is 1."
         },
     )
+    enable_audio_api: bool = field(
+        default=True,
+        metadata={
+            "help": "Enable OpenAI-compatible audio API endpoints (/v1/audio/transcriptions, "
+            "/v1/audio/translations, /v1/audio/speech) on the realtime server. "
+            "These endpoints reuse the loaded STT and TTS models. Default is True."
+        },
+    )

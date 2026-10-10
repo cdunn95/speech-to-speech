@@ -1,6 +1,7 @@
 import logging
 import threading
 from threading import Event
+from typing import Any
 
 import uvicorn
 
@@ -27,6 +28,7 @@ class RealtimeServer:
         host: str = "0.0.0.0",
         port: int = 8765,
         llm_proxy_config: LLMProxyConfig | None = None,
+        audio_api_engine: Any | None = None,
     ) -> None:
         if not pool:
             raise ValueError("RealtimeServer requires at least one PipelineUnit in the pool")
@@ -35,6 +37,7 @@ class RealtimeServer:
         self.host = host
         self.port = port
         self.llm_proxy_config = llm_proxy_config
+        self.audio_api_engine = audio_api_engine
 
     def run(self) -> None:
         """Start the FastAPI/uvicorn server (called from a ThreadManager thread)."""
@@ -50,6 +53,7 @@ class RealtimeServer:
             stop_event=self.stop_event,
             llm_proxy_config=self.llm_proxy_config,
             clone_store=clone_store,
+            audio_api_engine=self.audio_api_engine,
         )
 
         logger.info(

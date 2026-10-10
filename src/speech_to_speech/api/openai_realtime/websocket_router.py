@@ -23,6 +23,7 @@ from openai.types.realtime import (
     SessionUpdateEvent,
 )
 
+from speech_to_speech.api.openai_audio.router import create_audio_api_router
 from speech_to_speech.api.openai_realtime.llm_proxy import LLMProxyConfig, mount_llm_proxy
 from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit, SessionState
 from speech_to_speech.api.openai_realtime.service import (
@@ -508,6 +509,7 @@ def create_app(
     stop_event: ThreadingEvent,
     llm_proxy_config: LLMProxyConfig | None = None,
     clone_store: "CloneStore | None" = None,
+    audio_api_engine: Any | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -538,6 +540,11 @@ def create_app(
         from speech_to_speech.api.openai_realtime.clone_router import create_clone_router
 
         app.include_router(create_clone_router(clone_store, pool))
+
+    # Mount OpenAI-compatible audio endpoints (/v1/audio/transcriptions,
+    # /v1/audio/translations, /v1/audio/speech) when an engine is provided.
+    if audio_api_engine is not None:
+        app.include_router(create_audio_api_router(audio_api_engine))
 
     def _claim_unit(transport: SessionTransport | None) -> PipelineUnit | None:
         """Atomically (between asyncio yield points) reserve the first idle unit.
