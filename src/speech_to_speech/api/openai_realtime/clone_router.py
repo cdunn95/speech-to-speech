@@ -65,6 +65,10 @@ def create_clone_router(clone_store: CloneStore, pool: list[Any]) -> APIRouter:
         for tts in _tts_handlers():
             try:
                 if clone is not None and hasattr(tts, "set_clone_reference"):
+                    # Validate the WAV exists before routing to it.
+                    if not clone.audio_path.is_file():
+                        logger.warning("Clone %d audio file missing: %s; skipping", clone.id, clone.audio_path)
+                        continue
                     tts.set_clone_reference(clone.audio_path, clone.transcription)
                     applied += 1
                 elif clone is None and hasattr(tts, "clear_clone_reference"):
@@ -129,14 +133,25 @@ def create_clone_router(clone_store: CloneStore, pool: list[Any]) -> APIRouter:
 
     @router.post("/clone/delete/")
     async def clone_delete(body: CloneRef) -> Any:
+        # Clear TTS handler references BEFORE deleting the file so that no
+        # in-flight generation can read a deleted WAV.
+        clone_info = await asyncio.to_thread(clone_store.get, body.clone)
+        if clone_info is None:
+            return _error(f"Clone not found: {body.clone!r}", 404)
+
+        # Check if this is the default so we can clear routing first.
+        current_default = await asyncio.to_thread(clone_store.get_default)
+        is_default = current_default is not None and current_default.id == clone_info.id
+
+        if is_default:
+            _apply_default(None)
+
         try:
             clone, was_default = await asyncio.to_thread(clone_store.delete, body.clone)
         except CloneError as e:
             status_code = 404 if isinstance(e, CloneNotFoundError) else 400
             return _error(str(e), status_code)
 
-        if was_default:
-            _apply_default(None)
         logger.info("Deleted voice clone id=%d name=%r", clone.id, clone.name)
         return {"status": "success", "id": clone.id, "name": clone.name}
 
