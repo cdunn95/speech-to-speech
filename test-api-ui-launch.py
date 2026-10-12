@@ -1165,17 +1165,82 @@ UI_HTML = r"""<!DOCTYPE html>
     });
   });
 
-  function audioSource(key) {
-    // Returns {blob, filename} — an uploaded file wins over a recording.
+  // ── in-browser audio → WAV normalisation ──────────────────────────
+  // The browser mic records webm/opus, which the server's soundfile decoder
+  // can't read (it relies on a server-side ffmpeg/librosa fallback for that).
+  // To make transcription robust regardless of the server's codec support, we
+  // decode the audio here and re-encode it as 16-bit PCM WAV, which soundfile
+  // reads natively.
+  async function blobToWavBlob(blob) {
+    const arrayBuffer = await blob.arrayBuffer();
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    try {
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      return new Blob([audioBufferToWav(audioBuffer)], { type: "audio/wav" });
+    } finally {
+      ctx.close().catch(() => {});
+    }
+  }
+
+  function audioBufferToWav(ab) {
+    const numChannels = ab.numberOfChannels;
+    const length = ab.length * numChannels * 2 + 44;
+    const buffer = new ArrayBuffer(length);
+    const view = new DataView(buffer);
+    let offset = 0;
+    const writeString = s => { for (let i = 0; i < s.length; i++) view.setUint8(offset++, s.charCodeAt(i)); };
+    const writeUint32 = v => { view.setUint32(offset, v, true); offset += 4; };
+    const writeUint16 = v => { view.setUint16(offset, v, true); offset += 2; };
+
+    writeString("RIFF");
+    writeUint32(36 + length);
+    writeString("WAVE");
+    writeString("fmt ");
+    writeUint32(16);
+    writeUint16(1);               // PCM
+    writeUint16(numChannels);
+    writeUint32(ab.sampleRate);
+    writeUint32(ab.sampleRate * numChannels * 2);
+    writeUint16(numChannels * 2);
+    writeUint16(16);              // bits per sample
+    writeString("data");
+    writeUint32(ab.length * numChannels * 2);
+
+    const channels = [];
+    for (let i = 0; i < numChannels; i++) channels.push(ab.getChannelData(i));
+    let idx = offset;
+    for (let i = 0; i < ab.length; i++) {
+      for (let c = 0; c < numChannels; c++) {
+        const s = Math.max(-1, Math.min(1, channels[c][i]));
+        view.setInt16(idx, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+        idx += 2;
+      }
+    }
+    return buffer;
+  }
+
+  async function getSubmitAudio(key) {
+    // Returns {blob, filename} — an uploaded file wins over a recording. The
+    // audio is normalised to WAV in the browser (see blobToWavBlob); if that
+    // fails we fall back to sending the original bytes.
     const fileInput = $(`#file-${key}`);
+    let blob, baseName;
     if (fileInput && fileInput.files && fileInput.files[0]) {
-      return { blob: fileInput.files[0], filename: fileInput.files[0].name };
+      blob = fileInput.files[0];
+      baseName = fileInput.files[0].name.replace(/\.[^.]+$/, "");
+    } else if (recordings[key]) {
+      blob = recordings[key];
+      baseName = `recording-${Date.now()}`;
+    } else {
+      return null;
     }
-    if (recordings[key]) {
-      const ext = extForMime(recordings[key].type);
-      return { blob: recordings[key], filename: `recording-${Date.now()}.${ext}` };
+    try {
+      return { blob: await blobToWavBlob(blob), filename: `${baseName}.wav` };
+    } catch (e) {
+      const ext = extForMime(blob.type);
+      return { blob, filename: `${baseName}.${ext}` };
     }
-    return null;
   }
 
   // ── proxy fetch helper ────────────────────────────────────────────
@@ -1226,7 +1291,15 @@ UI_HTML = r"""<!DOCTYPE html>
 
   async function runTranscription() {
     const key = "transcription";
-    const src = audioSource(key);
+    clearStatus(key);
+    setStatus(key, "warn", "Preparing audio…");
+    let src;
+    try {
+      src = await getSubmitAudio(key);
+    } catch (e) {
+      setStatus(key, "err", "Could not prepare audio: " + e.message);
+      return;
+    }
     if (!src) { setStatus(key, "err", "Record audio or choose a file first."); return; }
     const form = new FormData();
     form.append("file", src.blob, src.filename);
@@ -1261,7 +1334,15 @@ UI_HTML = r"""<!DOCTYPE html>
 
   async function runTranslation() {
     const key = "translation";
-    const src = audioSource(key);
+    clearStatus(key);
+    setStatus(key, "warn", "Preparing audio…");
+    let src;
+    try {
+      src = await getSubmitAudio(key);
+    } catch (e) {
+      setStatus(key, "err", "Could not prepare audio: " + e.message);
+      return;
+    }
     if (!src) { setStatus(key, "err", "Record audio or choose a file first."); return; }
     const form = new FormData();
     form.append("file", src.blob, src.filename);
