@@ -806,6 +806,11 @@ UI_HTML = r"""<!DOCTYPE html>
       <h2>Transcription <span class="endpoint">POST /v1/audio/transcriptions</span></h2>
       <p class="sub">Convert audio to text. Record with your microphone or upload a file.</p>
 
+      <label style="display:flex; gap:8px; align-items:center; margin:0 0 14px; font-size:13px; font-weight:600; cursor:pointer">
+        <input type="checkbox" id="rt-toggle" style="width:auto"> Realtime
+        <span class="muted" style="font-weight:400; font-size:12px">— transcribe continuously as you talk</span>
+      </label>
+
       <div class="mic" id="mic-transcription">
         <span class="rec-indicator"></span>
         <button class="rec" data-mic="transcription">● Record</button>
@@ -842,6 +847,7 @@ UI_HTML = r"""<!DOCTYPE html>
         <label class="muted" style="font-size:12px"><input type="checkbox" data-raw="transcription" style="width:auto"> show raw</label>
       </div>
       <div class="result" data-result="transcription"></div>
+      <div class="result" data-realtime="transcription" style="border-color: var(--accent)"></div>
     </div>
   </section>
 
@@ -1144,16 +1150,205 @@ UI_HTML = r"""<!DOCTYPE html>
   }
   function micMsg(key, msg) { $(`[data-micmsg="${key}"]`).textContent = msg; }
 
-  $$("[data-mic]").forEach(b => b.addEventListener("click", () => startRecording(b.dataset.mic)));
-  $$("[data-stop]").forEach(b => b.addEventListener("click", () => stopRecording(b.dataset.stop)));
-  $$("[data-clear]").forEach(b => b.addEventListener("click", () => clearRecording(b.dataset.clear)));
+  // ── realtime (chunked) transcription ──────────────────────────────
+  // The /transcriptions REST endpoint is request/response (no true
+  // streaming), so "realtime" here means: capture raw PCM continuously
+  // from the mic, and every RT_CHUNK_MS encode the accumulated audio to
+  // WAV and transcribe it, appending the result to a live transcript.
+  // This gives the "transcribes as I keep talking" experience.
+  const RT_CHUNK_MS = 1500;
+  const realtime = {};  // key -> state
 
-  // Stop all microphones if the page is hidden/closed.
+  function float32ToWav(pcm, sampleRate) {
+    const numChannels = 1;
+    const length = pcm.length * 2 + 44;
+    const buffer = new ArrayBuffer(length);
+    const view = new DataView(buffer);
+    let offset = 0;
+    const writeString = s => { for (let i = 0; i < s.length; i++) view.setUint8(offset++, s.charCodeAt(i)); };
+    const writeUint32 = v => { view.setUint32(offset, v, true); offset += 4; };
+    const writeUint16 = v => { view.setUint16(offset, v, true); offset += 2; };
+
+    writeString("RIFF");
+    writeUint32(36 + length);
+    writeString("WAVE");
+    writeString("fmt ");
+    writeUint32(16);
+    writeUint16(1);               // PCM
+    writeUint16(numChannels);
+    writeUint32(sampleRate);
+    writeUint32(sampleRate * numChannels * 2);
+    writeUint16(numChannels * 2);
+    writeUint16(16);              // bits per sample
+    writeString("data");
+    writeUint32(pcm.length * 2);
+
+    let idx = offset;
+    for (let i = 0; i < pcm.length; i++) {
+      const s = Math.max(-1, Math.min(1, pcm[i]));
+      view.setInt16(idx, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      idx += 2;
+    }
+    return buffer;
+  }
+
+  function showRealtimeTranscript(key, text) {
+    const el = $(`[data-realtime="${key}"]`);
+    if (!el) return;
+    el.innerHTML = "";
+    const lab = document.createElement("span");
+    lab.className = "label";
+    lab.textContent = "Live transcript";
+    el.appendChild(lab);
+    el.appendChild(document.createTextNode(text || ""));
+    el.classList.add("show");
+  }
+
+  async function startRealtime(key) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      micMsg(key, "Mic unavailable — needs a secure context (use --ssl, or open via localhost).");
+      return;
+    }
+    if (!window.AudioContext && !window.webkitAudioContext) {
+      micMsg(key, "Web Audio API not available in this browser.");
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      const name = e && e.name ? ` (${e.name})` : "";
+      micMsg(key, "Mic error" + name + ": " + (e && e.message ? e.message : String(e)));
+      return;
+    }
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    try { await ctx.resume(); } catch (e) {}
+    const source = ctx.createMediaStreamSource(stream);
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    const gain = ctx.createGain();
+    gain.gain.value = 0;  // route through the processor without playing back
+    source.connect(processor);
+    processor.connect(gain);
+    gain.connect(ctx.destination);
+
+    const state = {
+      ctx, source, processor, gain, stream,
+      chunks: [], inFlight: false, running: true, transcript: "", t0: Date.now(),
+    };
+    realtime[key] = state;
+
+    processor.onaudioprocess = e => {
+      if (!state.running) return;
+      state.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    };
+    state.timer = setInterval(() => flushRealtimeChunk(key), RT_CHUNK_MS);
+    state.clock = setInterval(() => {
+      const s = Math.floor((Date.now() - state.t0) / 1000);
+      $(`[data-timer="${key}"]`).textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    }, 250);
+
+    setMicUI(key, true);
+    micMsg(key, "Live transcription running…");
+    showRealtimeTranscript(key, "");
+  }
+
+  async function flushRealtimeChunk(key) {
+    const state = realtime[key];
+    if (!state || !state.running || state.inFlight) return;
+    let total = 0;
+    for (const c of state.chunks) total += c.length;
+    // Require at least ~0.5s of audio before spending a request on it.
+    if (total < Math.floor(0.5 * state.ctx.sampleRate)) return;
+
+    const pcm = new Float32Array(total);
+    let off = 0;
+    for (const c of state.chunks) { pcm.set(c, off); off += c.length; }
+    state.chunks = [];
+    state.inFlight = true;
+    micMsg(key, "Transcribing…");
+    try {
+      const blob = new Blob([float32ToWav(pcm, state.ctx.sampleRate)], { type: "audio/wav" });
+      const form = new FormData();
+      form.append("file", blob, `live-${Date.now()}.wav`);
+      form.append("model", $("#t-model").value.trim() || "whisper");
+      const lang = $("#t-language").value.trim();
+      if (lang) form.append("language", lang);
+      form.append("response_format", "json");
+      const res = await proxyFetch("v1/audio/transcriptions", { form });
+      const text = decodeText(res.buffer);
+      let piece = "";
+      if (res.status.toString().startsWith("2")) {
+        try { piece = (JSON.parse(text).text || "").trim(); } catch (e) { piece = text.trim(); }
+      } else {
+        piece = `[HTTP ${res.status}]`;
+      }
+      if (piece && state.running) {
+        state.transcript = (state.transcript ? state.transcript + " " : "") + piece;
+        showRealtimeTranscript(key, state.transcript);
+      }
+    } catch (e) {
+      /* transient network error — keep capturing */
+    } finally {
+      state.inFlight = false;
+      if (realtime[key] && realtime[key].running) micMsg(key, "Live transcription running…");
+    }
+  }
+
+  function stopRealtime(key) {
+    const state = realtime[key];
+    if (!state) return;
+    state.running = false;
+    clearInterval(state.timer);
+    clearInterval(state.clock);
+    try { state.processor.disconnect(); } catch (e) {}
+    try { state.source.disconnect(); } catch (e) {}
+    try { state.gain.disconnect(); } catch (e) {}
+    state.stream.getTracks().forEach(t => t.stop());
+    state.ctx.close().catch(() => {});
+    delete realtime[key];
+    setMicUI(key, false);
+    $(`[data-timer="${key}"]`).textContent = "";
+    micMsg(key, "Live transcription stopped.");
+  }
+
+  $$("[data-mic]").forEach(b => b.addEventListener("click", () => {
+    const key = b.dataset.mic;
+    if (key === "transcription" && $("#rt-toggle").checked) startRealtime(key);
+    else startRecording(key);
+  }));
+  $$("[data-stop]").forEach(b => b.addEventListener("click", () => {
+    const key = b.dataset.stop;
+    if (realtime[key]) stopRealtime(key);
+    else stopRecording(key);
+  }));
+  $$("[data-clear]").forEach(b => b.addEventListener("click", () => {
+    const key = b.dataset.clear;
+    if (realtime[key]) { stopRealtime(key); showRealtimeTranscript(key, ""); }
+    else clearRecording(key);
+  }));
+
+  // Realtime toggle: in realtime mode the Transcribe button and file upload
+  // are not used (transcription happens continuously while recording).
+  $("#rt-toggle").addEventListener("change", () => {
+    const on = $("#rt-toggle").checked;
+    const runBtn = $("[data-run='transcription']");
+    if (runBtn) runBtn.disabled = on;
+    const fileInput = $("#file-transcription");
+    if (fileInput) fileInput.disabled = on;
+    if (on) {
+      if (realtime["transcription"]) stopRealtime("transcription");
+      micMsg("transcription", "Realtime on — press Record to start live transcription.");
+    }
+  });
+
+  // Stop all microphones (recordings + realtime) if the page is hidden/closed.
   window.addEventListener("pagehide", () => {
     Object.keys(recorders).forEach(key => {
       const r = recorders[key];
       if (r) { try { r.rec.stop(); } catch (e) {} r.stream.getTracks().forEach(t => t.stop()); }
     });
+    Object.keys(realtime).forEach(key => { try { stopRealtime(key); } catch (e) {} });
   });
 
   // ── file inputs: a chosen file is preferred over a recording ──────
