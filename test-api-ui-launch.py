@@ -1156,7 +1156,8 @@ UI_HTML = r"""<!DOCTYPE html>
   // from the mic, and every RT_CHUNK_MS encode the accumulated audio to
   // WAV and transcribe it, appending the result to a live transcript.
   // This gives the "transcribes as I keep talking" experience.
-  const RT_CHUNK_MS = 1500;
+  const RT_CHUNK_MS = 3000;       // flush interval (ms) for live transcription requests
+  const RT_MAX_SECONDS = 20;      // cap on buffered audio if the server is slow
   const realtime = {};  // key -> state
 
   function float32ToWav(pcm, sampleRate) {
@@ -1170,7 +1171,7 @@ UI_HTML = r"""<!DOCTYPE html>
     const writeUint16 = v => { view.setUint16(offset, v, true); offset += 2; };
 
     writeString("RIFF");
-    writeUint32(36 + length);
+    writeUint32(length - 8);
     writeString("WAVE");
     writeString("fmt ");
     writeUint32(16);
@@ -1195,16 +1196,21 @@ UI_HTML = r"""<!DOCTYPE html>
   function showRealtimeTranscript(key, text) {
     const el = $(`[data-realtime="${key}"]`);
     if (!el) return;
-    el.innerHTML = "";
-    const lab = document.createElement("span");
-    lab.className = "label";
-    lab.textContent = "Live transcript";
-    el.appendChild(lab);
-    el.appendChild(document.createTextNode(text || ""));
+    if (!el.querySelector(".label")) {
+      el.innerHTML = "";
+      const lab = document.createElement("span");
+      lab.className = "label";
+      lab.textContent = "Live transcript";
+      el.appendChild(lab);
+      el.appendChild(document.createTextNode(""));
+    }
+    el.lastChild.textContent = text || "";
     el.classList.add("show");
+    el.scrollTop = el.scrollHeight;
   }
 
   async function startRealtime(key) {
+    if (realtime[key]) return;  // already starting or running
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       micMsg(key, "Mic unavailable — needs a secure context (use --ssl, or open via localhost).");
       return;
@@ -1213,34 +1219,77 @@ UI_HTML = r"""<!DOCTYPE html>
       micMsg(key, "Web Audio API not available in this browser.");
       return;
     }
+    // Claim the slot synchronously (before any await) so a second click on
+    // Record during the mic-permission prompt can't start a duplicate session.
+    const state = {
+      ctx: null, source: null, processor: null, gain: null, stream: null,
+      chunks: [], inFlight: false, running: true, transcript: "", t0: Date.now(),
+      timer: null, clock: null, abort: null,
+    };
+    realtime[key] = state;
+
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
+      delete realtime[key];
       const name = e && e.name ? ` (${e.name})` : "";
       micMsg(key, "Mic error" + name + ": " + (e && e.message ? e.message : String(e)));
       return;
     }
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new Ctx();
-    try { await ctx.resume(); } catch (e) {}
-    const source = ctx.createMediaStreamSource(stream);
-    const processor = ctx.createScriptProcessor(4096, 1, 1);
-    const gain = ctx.createGain();
-    gain.gain.value = 0;  // route through the processor without playing back
-    source.connect(processor);
-    processor.connect(gain);
-    gain.connect(ctx.destination);
+    if (realtime[key] !== state) {
+      // Session was stopped while the permission prompt was up.
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
+    state.stream = stream;
+    let ctx = null;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      ctx = new Ctx();
+      try { await ctx.resume(); } catch (e) {}
+      if (realtime[key] !== state) {
+        ctx.close().catch(() => {});
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+      if (ctx.state === "suspended") {
+        delete realtime[key];
+        ctx.close().catch(() => {});
+        stream.getTracks().forEach(t => t.stop());
+        micMsg(key, "AudioContext is suspended (browser blocked audio) — click Record again.");
+        return;
+      }
+      const source = ctx.createMediaStreamSource(stream);
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      const gain = ctx.createGain();
+      gain.gain.value = 0;  // route through the processor without playing back
+      source.connect(processor);
+      processor.connect(gain);
+      gain.connect(ctx.destination);
+      state.ctx = ctx;
+      state.source = source;
+      state.processor = processor;
+      state.gain = gain;
+    } catch (e) {
+      delete realtime[key];
+      if (ctx) ctx.close().catch(() => {});
+      stream.getTracks().forEach(t => t.stop());
+      micMsg(key, "Audio setup failed: " + (e && e.message ? e.message : String(e)));
+      return;
+    }
 
-    const state = {
-      ctx, source, processor, gain, stream,
-      chunks: [], inFlight: false, running: true, transcript: "", t0: Date.now(),
-    };
-    realtime[key] = state;
-
-    processor.onaudioprocess = e => {
+    state.processor.onaudioprocess = e => {
       if (!state.running) return;
       state.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      // Cap buffered audio so a stalled server can't grow it without bound
+      // (drop the oldest samples).
+      let total = 0;
+      for (const c of state.chunks) total += c.length;
+      const maxSamples = RT_MAX_SECONDS * state.ctx.sampleRate;
+      while (total > maxSamples && state.chunks.length > 1) {
+        total -= state.chunks.shift().length;
+      }
     };
     state.timer = setInterval(() => flushRealtimeChunk(key), RT_CHUNK_MS);
     state.clock = setInterval(() => {
@@ -1253,9 +1302,9 @@ UI_HTML = r"""<!DOCTYPE html>
     showRealtimeTranscript(key, "");
   }
 
-  async function flushRealtimeChunk(key) {
+  async function flushRealtimeChunk(key, final = false) {
     const state = realtime[key];
-    if (!state || !state.running || state.inFlight) return;
+    if (!state || (!state.running && !final) || state.inFlight) return;
     let total = 0;
     for (const c of state.chunks) total += c.length;
     // Require at least ~0.5s of audio before spending a request on it.
@@ -1267,6 +1316,8 @@ UI_HTML = r"""<!DOCTYPE html>
     state.chunks = [];
     state.inFlight = true;
     micMsg(key, "Transcribing…");
+    const abort = new AbortController();
+    state.abort = abort;
     try {
       const blob = new Blob([float32ToWav(pcm, state.ctx.sampleRate)], { type: "audio/wav" });
       const form = new FormData();
@@ -1274,38 +1325,55 @@ UI_HTML = r"""<!DOCTYPE html>
       form.append("model", $("#t-model").value.trim() || "whisper");
       const lang = $("#t-language").value.trim();
       if (lang) form.append("language", lang);
+      // Feed the tail of the running transcript as prompt so words split
+      // across chunk boundaries stay coherent.
+      const prompt = state.transcript.slice(-200).trim();
+      if (prompt) form.append("prompt", prompt);
       form.append("response_format", "json");
-      const res = await proxyFetch("v1/audio/transcriptions", { form });
+      const res = await proxyFetch("v1/audio/transcriptions", { form, signal: abort.signal });
       const text = decodeText(res.buffer);
-      let piece = "";
-      if (res.status.toString().startsWith("2")) {
+      if (res.status >= 200 && res.status < 300) {
+        let piece = "";
         try { piece = (JSON.parse(text).text || "").trim(); } catch (e) { piece = text.trim(); }
+        if (piece && (state.running || final)) {
+          state.transcript = (state.transcript ? state.transcript + " " : "") + piece;
+          showRealtimeTranscript(key, state.transcript);
+        }
       } else {
-        piece = `[HTTP ${res.status}]`;
-      }
-      if (piece && state.running) {
-        state.transcript = (state.transcript ? state.transcript + " " : "") + piece;
-        showRealtimeTranscript(key, state.transcript);
+        // Keep the transcript clean; surface the failure next to the mic.
+        micMsg(key, "Transcription error: HTTP " + res.status + " — retrying…");
       }
     } catch (e) {
-      /* transient network error — keep capturing */
+      if (e && e.name === "AbortError") return;  // session stopped; teardown owns cleanup
+      micMsg(key, "Transcription error: " + (e && e.message ? e.message : String(e)) + " — retrying…");
     } finally {
       state.inFlight = false;
+      if (state.abort === abort) state.abort = null;
       if (realtime[key] && realtime[key].running) micMsg(key, "Live transcription running…");
     }
   }
 
-  function stopRealtime(key) {
+  async function stopRealtime(key) {
     const state = realtime[key];
-    if (!state) return;
+    if (!state || state.stopping) return;  // idempotent
+    state.stopping = true;
     state.running = false;
-    clearInterval(state.timer);
-    clearInterval(state.clock);
-    try { state.processor.disconnect(); } catch (e) {}
-    try { state.source.disconnect(); } catch (e) {}
-    try { state.gain.disconnect(); } catch (e) {}
-    state.stream.getTracks().forEach(t => t.stop());
-    state.ctx.close().catch(() => {});
+    if (state.timer) clearInterval(state.timer);
+    if (state.clock) clearInterval(state.clock);
+    // Flush any buffered tail audio (skip if a request is already in flight).
+    if (!state.inFlight && state.chunks.length) {
+      try { await flushRealtimeChunk(key, true); } catch (e) {}
+    }
+    // Abort a request that is still in flight.
+    if (state.abort) { try { state.abort.abort(); } catch (e) {} }
+    if (state.processor) {
+      state.processor.onaudioprocess = null;
+      try { state.processor.disconnect(); } catch (e) {}
+    }
+    if (state.source) { try { state.source.disconnect(); } catch (e) {} }
+    if (state.gain) { try { state.gain.disconnect(); } catch (e) {} }
+    if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+    if (state.ctx) state.ctx.close().catch(() => {});
     delete realtime[key];
     setMicUI(key, false);
     $(`[data-timer="${key}"]`).textContent = "";
@@ -1322,9 +1390,9 @@ UI_HTML = r"""<!DOCTYPE html>
     if (realtime[key]) stopRealtime(key);
     else stopRecording(key);
   }));
-  $$("[data-clear]").forEach(b => b.addEventListener("click", () => {
+  $$("[data-clear]").forEach(b => b.addEventListener("click", async () => {
     const key = b.dataset.clear;
-    if (realtime[key]) { stopRealtime(key); showRealtimeTranscript(key, ""); }
+    if (realtime[key]) { await stopRealtime(key); showRealtimeTranscript(key, ""); }
     else clearRecording(key);
   }));
 
@@ -1337,8 +1405,9 @@ UI_HTML = r"""<!DOCTYPE html>
     const fileInput = $("#file-transcription");
     if (fileInput) fileInput.disabled = on;
     if (on) {
-      if (realtime["transcription"]) stopRealtime("transcription");
       micMsg("transcription", "Realtime on — press Record to start live transcription.");
+    } else {
+      stopRealtime("transcription");  // stop a live session if one is running
     }
   });
 
@@ -1389,7 +1458,7 @@ UI_HTML = r"""<!DOCTYPE html>
     const writeUint16 = v => { view.setUint16(offset, v, true); offset += 2; };
 
     writeString("RIFF");
-    writeUint32(36 + length);
+    writeUint32(length - 8);
     writeString("WAVE");
     writeString("fmt ");
     writeUint32(16);
@@ -1439,7 +1508,7 @@ UI_HTML = r"""<!DOCTYPE html>
   }
 
   // ── proxy fetch helper ────────────────────────────────────────────
-  async function proxyFetch(path, { method = "POST", form = null, json = null } = {}) {
+  async function proxyFetch(path, { method = "POST", form = null, json = null, signal = null } = {}) {
     const opts = { method };
     let body;
     if (form) { body = form; }
@@ -1447,6 +1516,7 @@ UI_HTML = r"""<!DOCTYPE html>
       body = JSON.stringify(json);
       opts.headers = { "Content-Type": "application/json" };
     }
+    if (signal) opts.signal = signal;
     opts.body = body;
     const res = await fetch("/proxy/" + path, opts);
     const ct = res.headers.get("Content-Type") || "";
