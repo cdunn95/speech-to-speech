@@ -544,6 +544,8 @@ def create_app(
     # Mount OpenAI-compatible audio endpoints (/v1/audio/transcriptions,
     # /v1/audio/translations, /v1/audio/speech) when an engine is provided.
     if audio_api_engine is not None:
+        if clone_store is not None:
+            audio_api_engine.set_clone_store(clone_store)
         app.include_router(create_audio_api_router(audio_api_engine))
 
     def _claim_unit(transport: SessionTransport | None) -> PipelineUnit | None:

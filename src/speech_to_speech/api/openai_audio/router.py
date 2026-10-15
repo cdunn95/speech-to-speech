@@ -549,6 +549,10 @@ def create_audio_api_router(engine: AudioAPIEngine) -> APIRouter:
 
         except HTTPException:
             raise
+        except ValueError as exc:
+            # Voice selection errors (unknown speaker, missing clone, etc.)
+            speech_log.warning("SPEECH voice error request=%s: %s", request_id, exc)
+            return _openai_error(400, str(exc), "invalid_request_error", param="voice")
         except Exception as exc:
             total_s = perf_counter() - started
             error_log.exception("SPEECH failed request=%s time=%.3fs", request_id, total_s)
