@@ -617,7 +617,9 @@ def _build_pipeline_unit(
     )
 
     tts_module = modules[type(handlers[-1]).__module__]
-    if tts_selection.name == "kokoro":
+    if tts_selection.name == "kitten":
+        service.tts_supported_languages = set(tts_module.KITTEN_LANGUAGE_CODES)
+    elif tts_selection.name == "kokoro":
         service.tts_supported_languages = {"en", "ja", "zh", "fr", "es", "it", "pt", "hi"}
     elif tts_selection.name == "facebookMMS":
         service.tts_supported_languages = set(tts_module.WHISPER_LANGUAGE_TO_FACEBOOK_LANGUAGE)

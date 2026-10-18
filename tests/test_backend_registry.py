@@ -87,6 +87,7 @@ def test_session_language_validation_uses_loaded_faster_whisper_capabilities(mod
     assert TTS_BACKENDS["qwen3"].kind == "tts"
     assert TTS_BACKENDS["openai"].kind == "tts"
     assert TTS_BACKENDS["supertonic"].required_extra == "supertonic"
+    assert TTS_BACKENDS["kitten"].required_extra == "kitten"
     assert LLM_BACKENDS["responses-api"].capabilities.supports_llm_proxy
     assert LLM_BACKENDS["chat-completions"].capabilities.supports_llm_proxy
     assert LLM_BACKENDS["chat-completions"].capabilities.supports_audio_input
@@ -349,6 +350,35 @@ def test_supertonic_cli_config_is_normalized_for_the_handler():
         "voice": "F3",
         "lang": "fr",
         "speed": 1.2,
+        "blocksize": 256,
+        "gen_kwargs": {},
+    }
+
+
+def test_kitten_cli_config_is_normalized_for_the_handler():
+    args = parse_arguments(
+        [
+            "--tts",
+            "kitten",
+            "--kitten_tts_voice",
+            "Bella",
+            "--use-cpu",
+            "--kitten_tts_blocksize",
+            "256",
+        ]
+    )
+
+    assert args.tts_backend.name == "kitten"
+    assert args.tts_backend.config == {
+        "model_name": "KittenML/kitten-tts-2",
+        "use_cpu": True,
+        "voice": "Bella",
+        "preset": "stable",
+        "weights": "packed",
+        "decoder": "default",
+        "default_language": "auto",
+        "ref_audio": None,
+        "ref_text": None,
         "blocksize": 256,
         "gen_kwargs": {},
     }
