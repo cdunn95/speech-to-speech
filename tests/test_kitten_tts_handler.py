@@ -582,6 +582,16 @@ def test_warmup_generates_with_the_initial_speaker() -> None:
     assert seen == [("Warmup", {"voice": "Kiki", "preset": "stable", "normalize": True})]
 
 
+def test_warmup_swallows_generation_errors() -> None:
+    def generate(text, **_kwargs):
+        raise RuntimeError("backend exploded during warmup")
+
+    handler = make_handler(generate, speaker="Kiki")
+
+    # A warmup failure must not propagate out of setup() and crash the server.
+    handler.warmup()
+
+
 def test_build_kittenml_rejects_non_kitten2_repos(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_kitten_tts(model_name, **kwargs):
         raise TypeError("Onnx.__init__() got an unexpected keyword argument 'decoder'")

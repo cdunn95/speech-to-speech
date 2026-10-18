@@ -217,7 +217,13 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
 
     def warmup(self) -> None:
         logger.info("Warming up Kitten TTS...")
-        self._generate("Warmup", self.speaker, None, None, True)
+        # A warmup failure should not take the whole server down at startup;
+        # real-utterance generation failures are already handled by the handler
+        # run loop, so degrade to a warning here, mirroring qwen3.
+        try:
+            self._generate("Warmup", self.speaker, None, None, True)
+        except Exception as exc:
+            logger.warning("Kitten TTS warmup generation failed: %s", exc)
 
     def _generate(
         self,

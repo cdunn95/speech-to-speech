@@ -320,7 +320,8 @@ pip install "speech-to-speech[kitten,kitten-cpp]"
 
 Notes:
 - On macOS, `kitten-cpp` installs nothing (the `kitten-tts-cpp` wheel pins `torch==2.13.0`, which conflicts with the base `torch==2.11.0` Darwin pin); CPU mode there uses the `kittenml` PyTorch path. On Linux/Windows the extra upgrades the shared environment to `torch==2.13.0`, which affects every other backend in the same venv
-- Only the 10 languages with dedicated voices are advertised to realtime sessions; the model speaks more, but other languages fall back to the default voice
+- The native C++ backend is a fast CPU path with reduced feature parity: it only supports `packed` weights and cannot do raw-audio voice cloning. Runtime voice selection (built-in voices through the OpenAI-compatible endpoints) relies on the model's voice list, which is only guaranteed on the `kittenml` PyTorch path; on the C++ path the CLI default voice is used
+- Only the 10 supported languages (9 with dedicated native voices, plus English via the default voice) are advertised to realtime sessions; the model speaks more, but other languages fall back to the default voice
 - With `--kitten_tts_ref_audio` set, the reference is restored after any API voice selection (it is the factory state), so runtime voice switching is only available without a setup reference
 
 ## Setup

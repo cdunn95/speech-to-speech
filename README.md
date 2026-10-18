@@ -614,7 +614,7 @@ Language coverage depends on the STT and TTS backends you pick, not on the pipel
 | TTS | MMS TTS | Broad multilingual coverage through MMS checkpoints |
 | TTS | OmniVoice | 600+ languages; voice cloning, design, and automatic voice selection |
 | TTS | Supertonic | 32 languages |
-| TTS | Kitten-TTS-2 | Multilingual, with dedicated voices for 10 languages; voice cloning |
+| TTS | Kitten-TTS-2 | Multilingual across 10 languages (9 with dedicated native voices); voice cloning |
 | TTS | Pocket TTS | English, French, German, Portuguese, Italian, Spanish |
 | TTS | OpenAI-compatible `/v1/audio/speech` endpoint | Depends on the connected TTS server/model |
 
