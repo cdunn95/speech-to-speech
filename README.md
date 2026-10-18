@@ -774,6 +774,8 @@ speech-to-speech serve \
     --kitten_tts_ref_text "Transcript of the reference clip."
 ```
 
+Always provide `--kitten_tts_ref_text`: without it the clip is re-transcribed with Whisper on every utterance.
+
 The handler resamples Kitten's 24 kHz output to the pipeline's 16 kHz `int16` blocks. The model is reachable from the OpenAI-compatible audio endpoints: select a built-in voice by name (e.g. `Bruno`) through `voice`, or a cloned voice through `custom/<name>` (for realtime sessions, set the clone as the default via `/clone/default`). See the [TTS component guide](./src/speech_to_speech/TTS/README.md#9-kitten-tts---tts-kitten) for all backend flags, including weights (`packed`, `emb4`, `full`) and decoder (`default`, `student_w4`) variants.
 
 ## CLI Reference

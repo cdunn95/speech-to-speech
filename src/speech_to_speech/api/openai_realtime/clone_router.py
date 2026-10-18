@@ -59,9 +59,15 @@ def create_clone_router(clone_store: CloneStore, pool: list[Any]) -> APIRouter:
                 handlers.append(tts)
         return handlers
 
-    def _apply_default(clone: Clone | None) -> int:
-        """Route synthesis to *clone* (or clear it) across every TTS handler."""
+    def _apply_default(clone: Clone | None) -> tuple[int, list[str]]:
+        """Route synthesis to *clone* (or clear it) across every TTS handler.
+
+        Returns the number of handlers the change was applied to plus the
+        per-handler failure reasons, so callers can report *why* nothing was
+        applied (e.g. a backend that rejects raw-audio cloning).
+        """
         applied = 0
+        failures: list[str] = []
         for tts in _tts_handlers():
             try:
                 if clone is not None and hasattr(tts, "set_clone_reference"):
@@ -75,8 +81,9 @@ def create_clone_router(clone_store: CloneStore, pool: list[Any]) -> APIRouter:
                     tts.clear_clone_reference()
                     applied += 1
             except Exception as e:  # noqa: BLE001 - a bad handler must not break the API
+                failures.append(str(e))
                 logger.warning("Failed to apply clone to a TTS handler: %s", e)
-        return applied
+        return applied, failures
 
     @router.post("/clone/new")
     async def clone_new(
@@ -122,7 +129,7 @@ def create_clone_router(clone_store: CloneStore, pool: list[Any]) -> APIRouter:
             status_code = 404 if isinstance(e, CloneNotFoundError) else 400
             return _error(str(e), status_code)
 
-        applied = _apply_default(clone)
+        applied, failures = _apply_default(clone)
         logger.info(
             "Set default voice clone id=%d name=%r (applied to %d TTS handler(s))",
             clone.id,
@@ -131,10 +138,17 @@ def create_clone_router(clone_store: CloneStore, pool: list[Any]) -> APIRouter:
         )
         result: dict[str, Any] = {"status": "success", "id": clone.id, "name": clone.name}
         if applied == 0:
-            result["warning"] = (
-                "No TTS handlers support voice cloning. The default is persisted "
-                "but synthesis will use the factory voice."
-            )
+            if failures:
+                # A handler exists but rejected the clone (e.g. the kitten C++
+                # backend cannot do raw-audio cloning) — say so explicitly.
+                result["warning"] = (
+                    f"The default clone was persisted but could not be applied to any TTS handler: {failures[0]}"
+                )
+            else:
+                result["warning"] = (
+                    "No TTS handlers support voice cloning. The default is persisted "
+                    "but synthesis will use the factory voice."
+                )
         return result
 
     @router.post("/clone/delete/")

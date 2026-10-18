@@ -80,7 +80,7 @@ fireredvad = [
     "fireredvad",
 ]
 kitten = [
-    "kittenml>=0.9.0",
+    "kittenml>=0.9.4",
 ]
 kitten-cpp = [
     "kitten-tts-cpp>=0.1.0; platform_system != 'Darwin'",

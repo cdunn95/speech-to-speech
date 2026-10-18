@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import sys
 import types
+import wave
 from collections.abc import Callable
 from pathlib import Path
 from queue import Queue
@@ -758,3 +760,214 @@ def test_setup_then_process_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
     # warmup + the German utterance; the language voice is auto-selected.
     assert [call["voice"] for call in seen] == ["Bruno", "German"]
     assert seen[1]["normalize"] is False
+
+
+def test_process_resamples_24k_to_16k_with_real_scipy() -> None:
+    """Exercise the real resample/chunk math (no resample_poly stub)."""
+
+    def generate(text, **_kwargs):
+        # ~3.14s of a 440 Hz sine at the model's native 24 kHz rate.
+        t = np.arange(75360, dtype=np.float32) / 24000.0
+        return (0.2 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+
+    handler = make_handler(generate, blocksize=512)
+
+    chunks = list(handler.process(TTSInput(text="Hello", language_code="en")))
+
+    # 75360 @24k -> 50240 @16k: 98 full 512-sample chunks plus a 64-sample
+    # tail padded to 512.
+    assert len(chunks) == 99
+    assert all(len(c) == 512 for c in chunks)
+    assert all(c.dtype == np.int16 for c in chunks)
+    for c in chunks:
+        assert -32768 <= int(c.min()) <= 32767
+    # The padded tail: 64 real samples followed by 448 zeros.
+    assert int(np.abs(chunks[-1][:64]).sum()) > 0
+    assert int(chunks[-1][64:].sum()) == 0
+
+
+def test_voice_name_extraction() -> None:
+    assert kitten_module._voice_name(None) is None
+    assert kitten_module._voice_name("") is None
+    assert kitten_module._voice_name("   ") is None
+    assert kitten_module._voice_name("Bruno") == "Bruno"
+    assert kitten_module._voice_name("  Bella  ") == "Bella"
+    assert kitten_module._voice_name(types.SimpleNamespace(id=None)) is None
+    assert kitten_module._voice_name(types.SimpleNamespace(id="")) is None
+    assert kitten_module._voice_name(types.SimpleNamespace(id="   ")) is None
+    assert kitten_module._voice_name(types.SimpleNamespace(id="Luna")) == "Luna"
+
+
+def test_pinned_voice_object_form_via_session_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = []
+
+    def generate(text, **kwargs):
+        seen.append(kwargs)
+        return np.zeros(8, dtype=np.float32)
+
+    monkeypatch.setattr(kitten_module.scipy.signal, "resample_poly", lambda *_args: np.zeros(4))
+    handler = make_handler(generate, speaker="Bruno")
+    runtime_config = RuntimeConfig(
+        session=RealtimeSessionCreateRequest(
+            type="realtime",
+            audio={"output": {"voice": {"id": "Luna"}}},
+        )
+    )
+
+    list(handler.process(TTSInput(text="Hello", runtime_config=runtime_config)))
+
+    assert seen[0]["voice"] == "Luna"
+    assert "reference" not in seen[0]
+
+
+def test_pinned_voice_degrades_when_voice_list_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = []
+
+    def generate(text, **kwargs):
+        seen.append(kwargs)
+        return np.zeros(8, dtype=np.float32)
+
+    monkeypatch.setattr(kitten_module.scipy.signal, "resample_poly", lambda *_args: np.zeros(4))
+    handler = make_handler(generate, speaker="Bruno")
+    handler.tts.available_voices = []
+
+    list(handler.process(TTSInput(text="Hello", response={"audio": {"output": {"voice": "Bella"}}})))
+
+    # An empty voice list means "unknown", so the pin degrades to the default
+    # voice instead of hard-failing.
+    assert seen[0]["voice"] == "Bruno"
+    assert "reference" not in seen[0]
+
+
+class _DeclaringKittenTTS:
+    """Fake model that declares its full capability surface."""
+
+    def __init__(self, model_name, **kwargs) -> None:
+        self.device = kwargs.get("device") or "cuda"
+        self.sample_rate = 24000
+        self.available_voices = ["Bruno", "Bella"]
+        self.decode_presets = {"stable": {}, "expressive": {}}
+        self.available_weights = ["packed", "emb4"]
+        self._decoders = ["default", "student_w4"]
+
+    def available_decoders(self) -> list[str]:
+        return self._decoders
+
+    def generate(self, text, **kwargs) -> np.ndarray:
+        return np.zeros(8, dtype=np.float32)
+
+
+def _install_declaring_kittenml(monkeypatch: pytest.MonkeyPatch) -> None:
+    kittenml_module = types.ModuleType("kittenml")
+    kittenml_module.KittenTTS = _DeclaringKittenTTS
+    monkeypatch.setitem(sys.modules, "kittenml", kittenml_module)
+    monkeypatch.setitem(sys.modules, "kitten_tts_cpp", None)
+
+
+def test_setup_rejects_unknown_preset(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_declaring_kittenml(monkeypatch)
+
+    with pytest.raises(ValueError, match="--kitten_tts_preset"):
+        KittenTTSHandler(Event(), Queue(), Queue(), setup_args=(Event(),), setup_kwargs={"preset": "nope"})
+
+
+def test_setup_rejects_unknown_voice(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_declaring_kittenml(monkeypatch)
+
+    with pytest.raises(ValueError, match="--kitten_tts_voice"):
+        KittenTTSHandler(Event(), Queue(), Queue(), setup_args=(Event(),), setup_kwargs={"voice": "Nope"})
+
+
+def test_setup_rejects_unknown_weights_and_decoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_declaring_kittenml(monkeypatch)
+
+    with pytest.raises(ValueError, match="--kitten_tts_weights"):
+        KittenTTSHandler(Event(), Queue(), Queue(), setup_args=(Event(),), setup_kwargs={"weights": "full"})
+    with pytest.raises(ValueError, match="--kitten_tts_decoder"):
+        KittenTTSHandler(Event(), Queue(), Queue(), setup_args=(Event(),), setup_kwargs={"decoder": "student_w8"})
+
+
+def test_setup_warns_when_voice_list_missing(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    class NoVoicesKittenTTS:
+        def __init__(self, model_name, **kwargs) -> None:
+            self.device = "cuda"
+            self.sample_rate = 24000
+            self.available_voices = None
+
+        def generate(self, text, **kwargs) -> np.ndarray:
+            return np.zeros(8, dtype=np.float32)
+
+    kittenml_module = types.ModuleType("kittenml")
+    kittenml_module.KittenTTS = NoVoicesKittenTTS
+    monkeypatch.setitem(sys.modules, "kittenml", kittenml_module)
+    monkeypatch.setitem(sys.modules, "kitten_tts_cpp", None)
+
+    with caplog.at_level(logging.WARNING, logger="speech_to_speech.TTS.kitten_tts_handler"):
+        handler = KittenTTSHandler(Event(), Queue(), Queue(), setup_args=(Event(),))
+
+    assert handler.get_supported_speakers() == []
+    assert any("no voice list" in record.message for record in caplog.records)
+
+
+def test_setup_warns_for_non_dedicated_default_language(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _install_fake_kitten_modules(monkeypatch, with_cpp=False)
+
+    with caplog.at_level(logging.WARNING, logger="speech_to_speech.TTS.kitten_tts_handler"):
+        handler = KittenTTSHandler(
+            Event(),
+            Queue(),
+            Queue(),
+            setup_args=(Event(),),
+            setup_kwargs={"default_language": "ja"},
+        )
+
+    assert handler._default_language == "ja"
+    assert any("no dedicated voice" in record.message for record in caplog.records)
+
+
+def test_build_kittenml_rejects_old_kittenml(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_kitten_tts(model_name, **kwargs):
+        raise TypeError("KittenTTS.__new__() got an unexpected keyword argument 'weights'")
+
+    kittenml_module = types.ModuleType("kittenml")
+    kittenml_module.KittenTTS = fake_kitten_tts
+    monkeypatch.setitem(sys.modules, "kittenml", kittenml_module)
+
+    with pytest.raises(ValueError, match="too old"):
+        KittenTTSHandler(Event(), Queue(), Queue(), setup_args=(Event(),))
+
+
+def _write_wav(path: Path, seconds: float, rate: int = 16000) -> Path:
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(b"\x00\x00" * int(seconds * rate))
+    return path
+
+
+def test_set_clone_reference_rejects_too_short_clip(tmp_path: Path) -> None:
+    handler = make_handler(lambda text, **_kwargs: np.zeros(8, dtype=np.float32))
+    ref = _write_wav(tmp_path / "short.wav", 1.0)
+
+    with pytest.raises(ValueError, match="5-30 second"):
+        handler.set_clone_reference(ref, "text")
+
+
+def test_set_clone_reference_rejects_too_long_clip(tmp_path: Path) -> None:
+    handler = make_handler(lambda text, **_kwargs: np.zeros(8, dtype=np.float32))
+    ref = _write_wav(tmp_path / "long.wav", 45.0)
+
+    with pytest.raises(ValueError, match="5-30 second"):
+        handler.set_clone_reference(ref, "text")
+
+
+def test_set_clone_reference_accepts_valid_clip(tmp_path: Path) -> None:
+    handler = make_handler(lambda text, **_kwargs: np.zeros(8, dtype=np.float32))
+    ref = _write_wav(tmp_path / "ok.wav", 10.0)
+
+    handler.set_clone_reference(ref, "text")
+
+    assert handler._clone_ref == (ref, "text")

@@ -384,6 +384,14 @@ def test_kitten_cli_config_is_normalized_for_the_handler():
     }
 
 
+def test_kitten_canonical_use_cpu_flag_is_accepted():
+    # The prefixed flag is the canonical form; --use-cpu is an alias.
+    args = parse_arguments(["--tts", "kitten", "--kitten-tts-use-cpu"])
+
+    assert args.tts_backend.name == "kitten"
+    assert args.tts_backend.config["use_cpu"] is True
+
+
 def test_audio_input_validation_uses_registry_capability_not_backend_name():
     spec = BackendSpec(
         "future-audio-backend",

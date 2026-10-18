@@ -8,12 +8,14 @@ class KittenTTSHandlerArguments:
         default="KittenML/kitten-tts-2",
         metadata={"help": "Hugging Face repo id for the Kitten-TTS model. Default is 'KittenML/kitten-tts-2'."},
     )
-    use_cpu: bool = field(
+    kitten_tts_use_cpu: bool = field(
         default=False,
         metadata={
+            # --use-cpu is kept as an alias for the documented ergonomics.
+            "aliases": ["--use-cpu"],
             "help": "Force CPU inference for Kitten-TTS. Uses the native C++ backend (kitten_tts_cpp) when "
             "installed, otherwise the PyTorch CPU path. Default is False (auto: CUDA when available, "
-            "CPU otherwise)."
+            "CPU otherwise).",
         },
     )
     kitten_tts_voice: str = field(
@@ -47,8 +49,9 @@ class KittenTTSHandlerArguments:
     kitten_tts_ref_text: Optional[str] = field(
         default=None,
         metadata={
-            "help": "Optional transcript of the reference clip. When omitted, the clip is transcribed "
-            "with Whisper on every synthesis call, adding per-utterance latency."
+            "help": "Optional transcript of the reference clip. When omitted, the clip is re-transcribed "
+            "with Whisper on EVERY synthesis call (measured ~7x per-utterance latency); always set it "
+            "when using voice cloning."
         },
     )
     kitten_tts_blocksize: int = field(

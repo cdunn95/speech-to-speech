@@ -130,6 +130,7 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
             logger.warning("Kitten TTS: ref_text has no effect without ref_audio; ignoring it")
 
         self._load_model(model_name, use_cpu, weights, decoder)
+        self._validate_model_config(weights, decoder)
         self.warmup()
 
     @property
@@ -210,10 +211,73 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
         try:
             return KittenTTS(model_name, device=device, decoder=decoder, weights=weights)
         except TypeError as exc:
+            message = str(exc)
+            if "onnx" in message.lower():
+                # A legacy KITTEN1/ONNX repo (e.g. kitten-tts-nano) routed through
+                # the ONNX model class, which rejects the KITTEN2 kwargs.
+                raise ValueError(
+                    f"Model {model_name!r} is not a Kitten-TTS-2 checkpoint; the kitten backend "
+                    f"only supports KITTEN2 repos such as KittenML/kitten-tts-2. Original error: {message}"
+                ) from exc
+            if "decoder" in message or "weights" in message:
+                # A kittenml older than 0.9.2 whose constructor predates the
+                # decoder/weights API.
+                raise ValueError(
+                    "This kittenml version is too old for the Kitten-TTS-2 decoder/weights API. "
+                    "Upgrade with `pip install -U 'kittenml>=0.9.4'`. Original error: " + message
+                ) from exc
+            raise ValueError(f"Failed to load Kitten-TTS-2 model {model_name!r}. Original error: {message}") from exc
+
+    def _validate_model_config(self, weights: str, decoder: str) -> None:
+        """Validate the CLI config against what the loaded model declares.
+
+        Static misconfiguration (a typo in voice/preset/weights/decoder) would
+        otherwise only surface per-utterance at runtime, so fail fast here. A
+        missing capability list is treated as "unknown" (warn, don't fail) so
+        exotic repos that do not publish one can still load.
+        """
+        voices = self.get_supported_speakers()
+        if voices:
+            # Cache the lowercase lookup once; it is immutable model metadata.
+            self._supported_voices = {str(v).lower(): str(v) for v in voices}
+            if self._speaker.lower() not in self._supported_voices:
+                raise ValueError(
+                    f"Kitten TTS voice {self._speaker!r} is not available in this model "
+                    f"(--kitten_tts_voice). Choose one of: {', '.join(sorted(voices, key=str.lower))}"
+                )
+            missing = sorted(v for v in KITTEN_LANGUAGE_VOICES.values() if v.lower() not in self._supported_voices)
+            if missing:
+                logger.warning(
+                    "Kitten TTS model is missing language voices %s; those languages will use the default voice",
+                    ", ".join(missing),
+                )
+        else:
+            self._supported_voices = {}
+            logger.warning("Kitten TTS model exposes no voice list; runtime voice selection will be unvalidated")
+        presets = getattr(self.tts, "decode_presets", None)
+        if presets is None:
+            config = getattr(self.tts, "config", None)
+            if isinstance(config, dict):
+                presets = config.get("decode_presets")
+        if presets and self.preset not in presets:
             raise ValueError(
-                f"Model {model_name!r} is not a Kitten-TTS-2 checkpoint; the kitten backend "
-                f"only supports KITTEN2 repos such as KittenML/kitten-tts-2. Original error: {exc}"
-            ) from exc
+                f"Kitten TTS preset {self.preset!r} is not available (--kitten_tts_preset). "
+                f"Choose from: {', '.join(sorted(str(p) for p in presets))}"
+            )
+        available_weights = getattr(self.tts, "available_weights", None)
+        if available_weights and weights not in available_weights:
+            raise ValueError(
+                f"Kitten TTS weights variant {weights!r} is not available (--kitten_tts_weights). "
+                f"Choose from: {', '.join(sorted(str(w) for w in available_weights))}"
+            )
+        decoders = getattr(self.tts, "available_decoders", None)
+        if callable(decoders):
+            decoders = decoders()
+        if decoders and decoder not in decoders:
+            raise ValueError(
+                f"Kitten TTS decoder variant {decoder!r} is not available (--kitten_tts_decoder). "
+                f"Choose from: {', '.join(sorted(str(d) for d in decoders))}"
+            )
 
     def warmup(self) -> None:
         logger.info("Warming up Kitten TTS...")
@@ -273,8 +337,12 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
         if pinned is not None:
             # Validate: an unknown name (e.g. an OpenAI default like "alloy" in a
             # session.update) would hard-fail every utterance, so degrade to the
-            # language/default voice with a warning, mirroring qwen3.
-            supported = {s.lower(): s for s in self.get_supported_speakers()}
+            # language/default voice with a warning, mirroring qwen3. An empty
+            # voice list means "unknown" (validation skipped), not "no valid
+            # voices".
+            supported = getattr(self, "_supported_voices", None)
+            if supported is None:
+                supported = {s.lower(): s for s in self.get_supported_speakers()}
             resolved = supported.get(pinned.lower())
             if resolved is None:
                 logger.warning(
@@ -396,6 +464,9 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
             yield np.pad(tail, (0, self.blocksize - len(tail)))
 
     def get_supported_speakers(self) -> list[str]:
+        cached = getattr(self, "_supported_voices", None)
+        if cached is not None:
+            return list(cached.values())
         voices = getattr(self.tts, "available_voices", None)
         return [str(v) for v in voices] if voices else []
 
@@ -408,9 +479,35 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
         path = Path(audio_path).expanduser()
         if not path.is_file():
             raise ValueError(f"Clone reference audio not found: {path}")
+        duration = self._reference_duration(path)
+        if duration is not None and not (5.0 <= duration <= 30.0):
+            raise ValueError(
+                f"Clone reference {path.name} is {duration:.1f}s long; Kitten-TTS-2 expects a "
+                "5-30 second reference clip"
+            )
         # Publish atomically so process() never sees a torn (path, text) pair.
         self._clone_ref = (path, transcription)
         logger.info("Kitten TTS clone reference set: %s", path.name)
+
+    @staticmethod
+    def _reference_duration(path: Path) -> float | None:
+        """Probe the reference clip's duration, or None when it cannot be read."""
+        try:
+            import soundfile
+
+            return float(soundfile.info(str(path)).duration)
+        except Exception:  # noqa: BLE001 - unreadable formats fall through to wave
+            pass
+        try:
+            import wave
+
+            with wave.open(str(path), "rb") as wav:
+                rate = wav.getframerate()
+                if rate:
+                    return wav.getnframes() / rate
+        except Exception:  # noqa: BLE001 - give up on probing, keep the file check only
+            pass
+        return None
 
     def clear_clone_reference(self) -> None:
         # Restore the CLI-provided reference (if any) instead of clearing it
