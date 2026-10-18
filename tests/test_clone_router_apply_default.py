@@ -55,8 +55,10 @@ def test_clone_default_reports_backend_rejection(client: TestClient) -> None:
     body = response.json()
     assert body["status"] == "success"
     # The generic "no handlers support cloning" warning would be misleading
-    # here: a handler exists but rejected the clone. The reason must be named.
-    assert "kitten_tts_cpp" in body["warning"]
+    # here: a handler exists but rejected the clone. The summary must say the
+    # backend could not apply it (the raw reason stays in the server logs).
+    assert "could not apply" in body["warning"]
+    assert "No TTS handlers support voice cloning" not in body["warning"]
 
 
 def test_clone_default_keeps_generic_warning_without_handlers(tmp_path) -> None:

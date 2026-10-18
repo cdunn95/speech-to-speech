@@ -11,8 +11,9 @@ class KittenTTSHandlerArguments:
     kitten_tts_use_cpu: bool = field(
         default=False,
         metadata={
-            # --use-cpu is kept as an alias for the documented ergonomics.
-            "aliases": ["--use-cpu"],
+            # --use-cpu / --use_cpu are kept as aliases for the documented
+            # ergonomics and for JSON pipeline configs keyed on "use_cpu".
+            "aliases": ["--use-cpu", "--use_cpu"],
             "help": "Force CPU inference for Kitten-TTS. Uses the native C++ backend (kitten_tts_cpp) when "
             "installed, otherwise the PyTorch CPU path. Default is False (auto: CUDA when available, "
             "CPU otherwise).",

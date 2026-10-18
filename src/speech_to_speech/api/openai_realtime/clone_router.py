@@ -140,9 +140,12 @@ def create_clone_router(clone_store: CloneStore, pool: list[Any]) -> APIRouter:
         if applied == 0:
             if failures:
                 # A handler exists but rejected the clone (e.g. the kitten C++
-                # backend cannot do raw-audio cloning) — say so explicitly.
+                # backend cannot do raw-audio cloning). The raw reason is
+                # already logged server-side; keep the client-facing summary
+                # free of backend internals.
                 result["warning"] = (
-                    f"The default clone was persisted but could not be applied to any TTS handler: {failures[0]}"
+                    "The default clone was persisted but the active TTS backend could not apply it; "
+                    "synthesis will use the factory voice. See the server logs for details."
                 )
             else:
                 result["warning"] = (

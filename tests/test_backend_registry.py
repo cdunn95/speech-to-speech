@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from copy import deepcopy
@@ -387,6 +388,25 @@ def test_kitten_cli_config_is_normalized_for_the_handler():
 def test_kitten_canonical_use_cpu_flag_is_accepted():
     # The prefixed flag is the canonical form; --use-cpu is an alias.
     args = parse_arguments(["--tts", "kitten", "--kitten-tts-use-cpu"])
+
+    assert args.tts_backend.name == "kitten"
+    assert args.tts_backend.config["use_cpu"] is True
+
+
+def test_kitten_underscore_use_cpu_flag_is_accepted():
+    args = parse_arguments(["--tts", "kitten", "--use_cpu"])
+
+    assert args.tts_backend.name == "kitten"
+    assert args.tts_backend.config["use_cpu"] is True
+
+
+def test_kitten_json_config_accepts_unprefixed_use_cpu(tmp_path):
+    # JSON configs key on the unprefixed "use_cpu"; it must resolve instead of
+    # being silently dropped (which would quietly select the GPU/auto path).
+    config = tmp_path / "pipeline.json"
+    config.write_text(json.dumps({"tts": "kitten", "use_cpu": True}))
+
+    args = parse_arguments([str(config)])
 
     assert args.tts_backend.name == "kitten"
     assert args.tts_backend.config["use_cpu"] is True

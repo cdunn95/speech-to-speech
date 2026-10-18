@@ -952,7 +952,7 @@ def test_set_clone_reference_rejects_too_short_clip(tmp_path: Path) -> None:
     handler = make_handler(lambda text, **_kwargs: np.zeros(8, dtype=np.float32))
     ref = _write_wav(tmp_path / "short.wav", 1.0)
 
-    with pytest.raises(ValueError, match="5-30 second"):
+    with pytest.raises(ValueError, match="2-30 second"):
         handler.set_clone_reference(ref, "text")
 
 
@@ -960,7 +960,7 @@ def test_set_clone_reference_rejects_too_long_clip(tmp_path: Path) -> None:
     handler = make_handler(lambda text, **_kwargs: np.zeros(8, dtype=np.float32))
     ref = _write_wav(tmp_path / "long.wav", 45.0)
 
-    with pytest.raises(ValueError, match="5-30 second"):
+    with pytest.raises(ValueError, match="2-30 second"):
         handler.set_clone_reference(ref, "text")
 
 
@@ -971,3 +971,71 @@ def test_set_clone_reference_accepts_valid_clip(tmp_path: Path) -> None:
     handler.set_clone_reference(ref, "text")
 
     assert handler._clone_ref == (ref, "text")
+
+
+def test_set_clone_reference_accepts_short_but_valid_clip(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # 2-5s clips are accepted by the platform clone store and the model
+    # handles them; they must keep working (with a quality warning), not be
+    # rejected.
+    handler = make_handler(lambda text, **_kwargs: np.zeros(8, dtype=np.float32))
+    ref = _write_wav(tmp_path / "short-ok.wav", 3.0)
+
+    with caplog.at_level(logging.WARNING, logger="speech_to_speech.TTS.kitten_tts_handler"):
+        handler.set_clone_reference(ref, "text")
+
+    assert handler._clone_ref == (ref, "text")
+    assert any("best clone quality" in record.message for record in caplog.records)
+
+
+def test_setup_warns_for_short_ref_audio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The CLI path reports the same quality guidance as the runtime path,
+    # but warns instead of raising (it cannot reject the process).
+    _install_fake_kitten_modules(monkeypatch, with_cpp=False)
+    ref = _write_wav(tmp_path / "short.wav", 3.0)
+
+    with caplog.at_level(logging.WARNING, logger="speech_to_speech.TTS.kitten_tts_handler"):
+        handler = KittenTTSHandler(
+            Event(),
+            Queue(),
+            Queue(),
+            setup_args=(Event(),),
+            setup_kwargs={"ref_audio": str(ref)},
+        )
+
+    assert handler._clone_ref == (ref, None)
+    assert any("best clone quality" in record.message for record in caplog.records)
+
+
+def test_setup_warns_when_language_voices_missing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class SingleVoiceKittenTTS:
+        def __init__(self, model_name, **kwargs) -> None:
+            self.device = "cuda"
+            self.sample_rate = 24000
+            self.available_voices = ["Bruno"]
+
+        def generate(self, text, **kwargs) -> np.ndarray:
+            return np.zeros(8, dtype=np.float32)
+
+    kittenml_module = types.ModuleType("kittenml")
+    kittenml_module.KittenTTS = SingleVoiceKittenTTS
+    monkeypatch.setitem(sys.modules, "kittenml", kittenml_module)
+    monkeypatch.setitem(sys.modules, "kitten_tts_cpp", None)
+
+    with caplog.at_level(logging.WARNING, logger="speech_to_speech.TTS.kitten_tts_handler"):
+        KittenTTSHandler(Event(), Queue(), Queue(), setup_args=(Event(),))
+
+    assert any("missing language voices" in record.message for record in caplog.records)
+
+
+def test_speaker_setter_resolves_case_insensitively() -> None:
+    handler = make_handler(lambda text, **_kwargs: np.zeros(8, dtype=np.float32), speaker="Bruno")
+    handler._supported_voices = {"bruno": "Bruno", "bella": "Bella"}
+
+    handler.speaker = "bella"
+
+    assert handler.speaker == "Bella"
+    assert handler._speaker_pinned is True

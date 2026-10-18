@@ -28,6 +28,7 @@ import scipy.signal
 from rich.console import Console
 
 from speech_to_speech.baseHandler import BaseHandler
+from speech_to_speech.clones.audio import MIN_CLONE_AUDIO_SECONDS
 from speech_to_speech.pipeline.cancel_scope import CancelScope
 from speech_to_speech.pipeline.handler_types import TTSIn, TTSOut
 from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, EndOfResponse, TTSInput
@@ -128,9 +129,14 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
         self._clone_ref = self._initial_clone_ref
         if ref_text and not ref_audio:
             logger.warning("Kitten TTS: ref_text has no effect without ref_audio; ignoring it")
+        if self._initial_clone_ref is not None:
+            # The CLI path cannot reject the process for a marginal clip, so it
+            # reports the same quality guidance as the runtime path (which
+            # raises) instead of staying silent.
+            self._log_reference_duration_guidance(self._initial_clone_ref[0])
 
         self._load_model(model_name, use_cpu, weights, decoder)
-        self._validate_model_config(weights, decoder)
+        self._validate_model_config(voice, preset, weights, decoder)
         self.warmup()
 
     @property
@@ -141,6 +147,12 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
     def speaker(self, value: str) -> None:
         # External activation (e.g. the audio engine's _activate_speaker) is an
         # explicit voice choice that wins over the language-voice auto-selection.
+        # Resolve case-insensitively when the voice list is known: the engine
+        # passes client strings through unvalidated when the model exposes no
+        # list, and the model's own voice lookup is case-sensitive.
+        supported = getattr(self, "_supported_voices", None)
+        if supported:
+            value = supported.get(value.lower(), value)
         self._speaker = value
         self._speaker_pinned = True
 
@@ -228,7 +240,7 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
                 ) from exc
             raise ValueError(f"Failed to load Kitten-TTS-2 model {model_name!r}. Original error: {message}") from exc
 
-    def _validate_model_config(self, weights: str, decoder: str) -> None:
+    def _validate_model_config(self, voice: str, preset: str, weights: str, decoder: str) -> None:
         """Validate the CLI config against what the loaded model declares.
 
         Static misconfiguration (a typo in voice/preset/weights/decoder) would
@@ -240,9 +252,9 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
         if voices:
             # Cache the lowercase lookup once; it is immutable model metadata.
             self._supported_voices = {str(v).lower(): str(v) for v in voices}
-            if self._speaker.lower() not in self._supported_voices:
+            if voice.lower() not in self._supported_voices:
                 raise ValueError(
-                    f"Kitten TTS voice {self._speaker!r} is not available in this model "
+                    f"Kitten TTS voice {voice!r} is not available in this model "
                     f"(--kitten_tts_voice). Choose one of: {', '.join(sorted(voices, key=str.lower))}"
                 )
             missing = sorted(v for v in KITTEN_LANGUAGE_VOICES.values() if v.lower() not in self._supported_voices)
@@ -259,9 +271,9 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
             config = getattr(self.tts, "config", None)
             if isinstance(config, dict):
                 presets = config.get("decode_presets")
-        if presets and self.preset not in presets:
+        if presets and preset not in presets:
             raise ValueError(
-                f"Kitten TTS preset {self.preset!r} is not available (--kitten_tts_preset). "
+                f"Kitten TTS preset {preset!r} is not available (--kitten_tts_preset). "
                 f"Choose from: {', '.join(sorted(str(p) for p in presets))}"
             )
         available_weights = getattr(self.tts, "available_weights", None)
@@ -337,9 +349,9 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
         if pinned is not None:
             # Validate: an unknown name (e.g. an OpenAI default like "alloy" in a
             # session.update) would hard-fail every utterance, so degrade to the
-            # language/default voice with a warning, mirroring qwen3. An empty
-            # voice list means "unknown" (validation skipped), not "no valid
-            # voices".
+            # language/default voice with a warning, mirroring qwen3. When the
+            # model exposes no voice list at all, any pin degrades the same way
+            # (the engine boundary, by contrast, activates unvalidated).
             supported = getattr(self, "_supported_voices", None)
             if supported is None:
                 supported = {s.lower(): s for s in self.get_supported_speakers()}
@@ -480,14 +492,39 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
         if not path.is_file():
             raise ValueError(f"Clone reference audio not found: {path}")
         duration = self._reference_duration(path)
-        if duration is not None and not (5.0 <= duration <= 30.0):
+        # Gate on the platform clone contract (2s floor, set by the clone
+        # store), not the model's 5s quality guidance: clips the API accepted
+        # at upload must keep working here.
+        if duration is not None and not (MIN_CLONE_AUDIO_SECONDS <= duration <= 30.0):
             raise ValueError(
                 f"Clone reference {path.name} is {duration:.1f}s long; Kitten-TTS-2 expects a "
-                "5-30 second reference clip"
+                f"{MIN_CLONE_AUDIO_SECONDS:.0f}-30 second reference clip"
             )
+        self._log_reference_duration_guidance(path, duration)
         # Publish atomically so process() never sees a torn (path, text) pair.
         self._clone_ref = (path, transcription)
         logger.info("Kitten TTS clone reference set: %s", path.name)
+
+    @classmethod
+    def _log_reference_duration_guidance(cls, path: Path, duration: float | None = None) -> None:
+        """Warn (never raise) when a reference clip is outside the 5-30s sweet spot."""
+        if duration is None:
+            duration = cls._reference_duration(path)
+        if duration is None:
+            return
+        if duration < MIN_CLONE_AUDIO_SECONDS or duration > 30.0:
+            logger.warning(
+                "Kitten TTS reference %s is %.1fs long; %.0f-30s clips give the best clone quality",
+                path.name,
+                duration,
+                MIN_CLONE_AUDIO_SECONDS,
+            )
+        elif duration < 5.0:
+            logger.warning(
+                "Kitten TTS reference %s is %.1fs; 5-30s gives the best clone quality",
+                path.name,
+                duration,
+            )
 
     @staticmethod
     def _reference_duration(path: Path) -> float | None:

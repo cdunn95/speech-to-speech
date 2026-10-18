@@ -251,6 +251,12 @@ def parse_arguments(
 
     if _is_json:
         assert pipeline_json is not None
+        # Back-compat for the kitten CPU flag's unprefixed name: JSON configs
+        # key on "use_cpu", while the dataclass field (and canonical CLI flag)
+        # is "kitten_tts_use_cpu". parse_dict matches field names only, so map
+        # the legacy key explicitly instead of letting it be silently dropped.
+        if pipeline_json.get("tts") == "kitten" and "use_cpu" in pipeline_json:
+            pipeline_json["kitten_tts_use_cpu"] = pipeline_json.pop("use_cpu")
         parsed = parser.parse_dict(pipeline_json, allow_extra_keys=True)
     else:
         parsed = _parse_selected_cli_configs(parser, pipeline_args, selected_specs)
