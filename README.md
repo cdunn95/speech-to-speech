@@ -765,7 +765,7 @@ speech-to-speech serve \
     --kitten_tts_voice Bruno
 ```
 
-Voice cloning from a 5-30 second reference clip:
+Voice cloning from a short reference clip (5-30 seconds recommended, 2 seconds minimum):
 
 ```bash
 speech-to-speech serve \

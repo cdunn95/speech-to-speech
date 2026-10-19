@@ -40,6 +40,9 @@ console = Console()
 PIPELINE_SAMPLE_RATE = 16000
 DEFAULT_MODEL = "KittenML/kitten-tts-2"
 KITTEN_SAMPLE_RATE = 24000
+# The clone store's upload floor, reused as kitten's hard rejection floor so
+# the API never accepts a clip the backend then refuses.
+KITTEN_MIN_CLONE_SECONDS = MIN_CLONE_AUDIO_SECONDS
 
 # Languages with a dedicated Kitten-TTS-2 voice. The model can speak more,
 # but these are the ones with native voice presets.
@@ -495,10 +498,10 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
         # Gate on the platform clone contract (2s floor, set by the clone
         # store), not the model's 5s quality guidance: clips the API accepted
         # at upload must keep working here.
-        if duration is not None and not (MIN_CLONE_AUDIO_SECONDS <= duration <= 30.0):
+        if duration is not None and not (KITTEN_MIN_CLONE_SECONDS <= duration <= 30.0):
             raise ValueError(
                 f"Clone reference {path.name} is {duration:.1f}s long; Kitten-TTS-2 expects a "
-                f"{MIN_CLONE_AUDIO_SECONDS:.0f}-30 second reference clip"
+                f"{KITTEN_MIN_CLONE_SECONDS:.0f}-30 second reference clip"
             )
         self._log_reference_duration_guidance(path, duration)
         # Publish atomically so process() never sees a torn (path, text) pair.
@@ -507,17 +510,23 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
 
     @classmethod
     def _log_reference_duration_guidance(cls, path: Path, duration: float | None = None) -> None:
-        """Warn (never raise) when a reference clip is outside the 5-30s sweet spot."""
+        """Warn (never raise) when a reference clip is outside the 5-30s sweet spot.
+
+        Callers have different contracts: setup() uses this for the CLI
+        reference (which it cannot reject), while set_clone_reference() calls
+        it after its hard gate, so the sub-floor branch is only reachable from
+        setup().
+        """
         if duration is None:
             duration = cls._reference_duration(path)
         if duration is None:
             return
-        if duration < MIN_CLONE_AUDIO_SECONDS or duration > 30.0:
+        if duration < KITTEN_MIN_CLONE_SECONDS or duration > 30.0:
             logger.warning(
                 "Kitten TTS reference %s is %.1fs long; %.0f-30s clips give the best clone quality",
                 path.name,
                 duration,
-                MIN_CLONE_AUDIO_SECONDS,
+                KITTEN_MIN_CLONE_SECONDS,
             )
         elif duration < 5.0:
             logger.warning(

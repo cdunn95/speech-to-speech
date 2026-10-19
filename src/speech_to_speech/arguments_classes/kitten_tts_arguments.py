@@ -45,7 +45,10 @@ class KittenTTSHandlerArguments:
     )
     kitten_tts_ref_audio: Optional[str] = field(
         default=None,
-        metadata={"help": "Optional path to a 5-30s reference audio clip for in-context voice cloning."},
+        metadata={
+            "help": "Optional path to a reference audio clip for in-context voice cloning "
+            "(5-30s recommended, 2s minimum)."
+        },
     )
     kitten_tts_ref_text: Optional[str] = field(
         default=None,

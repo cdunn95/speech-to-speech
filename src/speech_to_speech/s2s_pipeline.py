@@ -255,7 +255,12 @@ def parse_arguments(
         # key on "use_cpu", while the dataclass field (and canonical CLI flag)
         # is "kitten_tts_use_cpu". parse_dict matches field names only, so map
         # the legacy key explicitly instead of letting it be silently dropped.
-        if pipeline_json.get("tts") == "kitten" and "use_cpu" in pipeline_json:
+        # The canonical spelling wins when both are present.
+        if (
+            pipeline_json.get("tts") == "kitten"
+            and "use_cpu" in pipeline_json
+            and "kitten_tts_use_cpu" not in pipeline_json
+        ):
             pipeline_json["kitten_tts_use_cpu"] = pipeline_json.pop("use_cpu")
         parsed = parser.parse_dict(pipeline_json, allow_extra_keys=True)
     else:
