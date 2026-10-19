@@ -80,8 +80,9 @@ class KittenTTSHandler(BaseHandler[TTSIn, TTSOut]):
     """
     Handles Text-to-Speech using KittenML's Kitten-TTS-2 model.
 
-    47 built-in voices, in-context voice cloning from a 5-30 second reference
-    clip, and expression control. Output is 24 kHz mono float32.
+    47 built-in voices, in-context voice cloning from a reference clip
+    (5-30 seconds recommended, 2 seconds minimum), and expression control.
+    Output is 24 kHz mono float32.
     """
 
     def setup(

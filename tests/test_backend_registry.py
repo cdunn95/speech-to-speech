@@ -412,6 +412,17 @@ def test_kitten_json_config_accepts_unprefixed_use_cpu(tmp_path):
     assert args.tts_backend.config["use_cpu"] is True
 
 
+def test_kitten_json_config_prefers_canonical_use_cpu_key(tmp_path):
+    # When both spellings are present, the canonical prefixed key wins.
+    config = tmp_path / "pipeline.json"
+    config.write_text(json.dumps({"tts": "kitten", "use_cpu": True, "kitten_tts_use_cpu": False}))
+
+    args = parse_arguments([str(config)])
+
+    assert args.tts_backend.name == "kitten"
+    assert args.tts_backend.config["use_cpu"] is False
+
+
 def test_audio_input_validation_uses_registry_capability_not_backend_name():
     spec = BackendSpec(
         "future-audio-backend",
