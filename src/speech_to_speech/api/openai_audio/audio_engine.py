@@ -241,7 +241,9 @@ class AudioAPIEngine:
                 supported = [str(s) for s in (get_speakers() or []) if s]
                 break
 
-        if supported is not None:
+        # An empty list means "the model exposed no voice list" (unknown), not
+        # "no valid voices" — validate only when we actually have a list.
+        if supported:
             speakers_by_lower = {s.lower(): s for s in supported}
             resolved = speakers_by_lower.get(speaker.lower())
             if resolved is None:

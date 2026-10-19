@@ -614,6 +614,7 @@ Language coverage depends on the STT and TTS backends you pick, not on the pipel
 | TTS | MMS TTS | Broad multilingual coverage through MMS checkpoints |
 | TTS | OmniVoice | 600+ languages; voice cloning, design, and automatic voice selection |
 | TTS | Supertonic | 32 languages |
+| TTS | Kitten-TTS-2 | Multilingual across 10 languages (9 with dedicated native voices); voice cloning |
 | TTS | Pocket TTS | English, French, German, Portuguese, Italian, Spanish |
 | TTS | OpenAI-compatible `/v1/audio/speech` endpoint | Depends on the connected TTS server/model |
 
@@ -741,6 +742,41 @@ to 24000 does not enable native-rate playback.
 
 The model weights use [CC-BY-NC-4.0](https://huggingface.co/mehdi-hf/pocket-tts-farsi-v2)
 and are for non-commercial use.
+
+## Kitten TTS
+
+[Kitten-TTS-2](https://huggingface.co/KittenML/kitten-tts-2) from KittenML provides high-quality multilingual TTS with 47 built-in voices and in-context voice cloning. By default it runs on CUDA when available (CPU otherwise); add `--use-cpu` to force CPU inference, which uses the native [kitten-tts-2-cpp](https://github.com/KittenML/kitten-tts-2-cpp) backend when installed for the fastest CPU path:
+
+```bash
+pip install "speech-to-speech[kitten]"
+# Optional: the native C++ backend for the fastest CPU path
+pip install "speech-to-speech[kitten-cpp]"
+speech-to-speech serve \
+    --tts kitten \
+    --kitten_tts_voice Bruno
+```
+
+CPU mode:
+
+```bash
+speech-to-speech serve \
+    --tts kitten \
+    --use-cpu \
+    --kitten_tts_voice Bruno
+```
+
+Voice cloning from a short reference clip (5-30 seconds recommended, 2 seconds minimum):
+
+```bash
+speech-to-speech serve \
+    --tts kitten \
+    --kitten_tts_ref_audio /path/to/reference.wav \
+    --kitten_tts_ref_text "Transcript of the reference clip."
+```
+
+Always provide `--kitten_tts_ref_text`: without it the clip is re-transcribed with Whisper on every utterance.
+
+The handler resamples Kitten's 24 kHz output to the pipeline's 16 kHz `int16` blocks. The model is reachable from the OpenAI-compatible audio endpoints: select a built-in voice by name (e.g. `Bruno`) through `voice`, or a cloned voice through `custom/<name>` (for realtime sessions, set the clone as the default via `/clone/default`). See the [TTS component guide](./src/speech_to_speech/TTS/README.md#9-kitten-tts---tts-kitten) for all backend flags, including weights (`packed`, `emb4`, `full`) and decoder (`default`, `student_w4`) variants.
 
 ## CLI Reference
 

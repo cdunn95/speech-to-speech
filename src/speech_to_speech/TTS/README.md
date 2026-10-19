@@ -12,6 +12,7 @@ Runtime-supported values in `s2s_pipeline.py`:
 - `qwen3` → `qwen3_tts_handler.py`
 - `openai` → `openai_compatible_handler.py`
 - `supertonic` → `supertonic_tts_handler.py`
+- `kitten` → `kitten_tts_handler.py`
 
 Deprecated TTS implementations, including MeloTTS, live in [`../../../archive/TTS`](../../../archive/TTS) and are no longer wired into `s2s_pipeline.py`.
 
@@ -280,6 +281,48 @@ Install the optional dependency with:
 ```bash
 pip install "speech-to-speech[supertonic]"
 ```
+
+### 9) Kitten-TTS (`--tts kitten`)
+
+Primary args prefix: `--kitten_tts_*`
+
+```bash
+speech-to-speech serve \
+  --tts kitten \
+  --kitten_tts_voice Bruno \
+  --kitten_tts_preset stable
+```
+
+Behavior:
+- Uses KittenML's [Kitten-TTS-2](https://huggingface.co/KittenML/kitten-tts-2) (1.7B ternary speech language model + flow vocoder)
+- Regular mode (default): the `kittenml` PyTorch backend on CUDA when available, CPU otherwise
+- CPU mode: add `--use-cpu` to force CPU inference. The native [`kitten_tts_cpp`](https://github.com/KittenML/kitten-tts-2-cpp) backend is used when installed (fastest CPU path); otherwise the `kittenml` PyTorch CPU path is used. Device selection is controlled by `--use-cpu`, not the global `--device` flag
+- 47 built-in voices (`Bruno`, `Bella`, `Luna`, `Kiki`, ...); select one with `--kitten_tts_voice`
+- The nine language-named voices (`Arabic`, `Chinese`, `French`, `German`, `Hindi`, `Italian`, `Portuguese`, `Russian`, `Spanish`) are selected automatically for their language, since the voice carries the accent
+- Voice precedence per request: active clone > explicit voice selection (a per-request pin or an API-activated speaker) > language voice > CLI default voice. The `--kitten_tts_voice` value is the unpinned default, so for non-English languages the language voice supersedes it; an unknown pinned name (e.g. OpenAI's `alloy` in a session update) is ignored with a warning and falls back to the default voice
+- In-context voice cloning from a reference clip (5-30s recommended, 2s minimum) via `--kitten_tts_ref_audio` (plus `--kitten_tts_ref_text`). Omitting the transcript makes the model re-transcribe the clip with Whisper on **every** utterance (measured ~7x per-utterance latency), so always set it. Cloning requires the PyTorch backend, so a setup reference (or `emb4`/`full` weights) forces `kittenml` even in CPU mode
+- `--kitten_tts_default_language` sets a language for requests that carry none (e.g. `/v1/audio/speech`); it selects the matching language voice and disables English text normalization
+- Weights variant (`packed`, `emb4`, `full`) and decoder variant (`default`, `student_w4`) are selectable with `--kitten_tts_weights` and `--kitten_tts_decoder`
+- Outputs natively at 24kHz but gets downsampled in the pipeline to 16kHz for uniform playback
+- Synthesis is blocking per utterance: first-audio latency equals whole-utterance synthesis time (worst on CPU)
+
+Install the optional dependency with:
+
+```bash
+pip install "speech-to-speech[kitten]"
+```
+
+For the fastest CPU path, also install the native C++ backend:
+
+```bash
+pip install "speech-to-speech[kitten,kitten-cpp]"
+```
+
+Notes:
+- On macOS, `kitten-cpp` installs nothing (the `kitten-tts-cpp` wheel pins `torch==2.13.0`, which conflicts with the base `torch==2.11.0` Darwin pin); CPU mode there uses the `kittenml` PyTorch path. On Linux/Windows the extra upgrades the shared environment to `torch==2.13.0`, which affects every other backend in the same venv
+- The native C++ backend is a fast CPU path with reduced feature parity: it only supports `packed` weights and cannot do raw-audio voice cloning (a clone request fails with an explicit error). Built-in voice selection works on both backends through the model's voice list
+- Only the 10 supported languages (9 with dedicated native voices, plus English via the default voice) are advertised to realtime sessions; the model speaks more, but other languages fall back to the default voice
+- With `--kitten_tts_ref_audio` set, the reference is restored after any API voice selection (it is the factory state), so runtime voice switching is only available without a setup reference
 
 ## Setup
 

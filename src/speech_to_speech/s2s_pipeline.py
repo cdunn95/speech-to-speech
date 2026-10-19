@@ -251,6 +251,17 @@ def parse_arguments(
 
     if _is_json:
         assert pipeline_json is not None
+        # Back-compat for the kitten CPU flag's unprefixed name: JSON configs
+        # key on "use_cpu", while the dataclass field (and canonical CLI flag)
+        # is "kitten_tts_use_cpu". parse_dict matches field names only, so map
+        # the legacy key explicitly instead of letting it be silently dropped.
+        # The canonical spelling wins when both are present.
+        if (
+            pipeline_json.get("tts") == "kitten"
+            and "use_cpu" in pipeline_json
+            and "kitten_tts_use_cpu" not in pipeline_json
+        ):
+            pipeline_json["kitten_tts_use_cpu"] = pipeline_json.pop("use_cpu")
         parsed = parser.parse_dict(pipeline_json, allow_extra_keys=True)
     else:
         parsed = _parse_selected_cli_configs(parser, pipeline_args, selected_specs)
@@ -617,7 +628,9 @@ def _build_pipeline_unit(
     )
 
     tts_module = modules[type(handlers[-1]).__module__]
-    if tts_selection.name == "kokoro":
+    if tts_selection.name == "kitten":
+        service.tts_supported_languages = set(tts_module.KITTEN_LANGUAGE_CODES)
+    elif tts_selection.name == "kokoro":
         service.tts_supported_languages = {"en", "ja", "zh", "fr", "es", "it", "pt", "hi"}
     elif tts_selection.name == "facebookMMS":
         service.tts_supported_languages = set(tts_module.WHISPER_LANGUAGE_TO_FACEBOOK_LANGUAGE)

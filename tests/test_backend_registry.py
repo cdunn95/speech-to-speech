@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from copy import deepcopy
@@ -87,6 +88,7 @@ def test_session_language_validation_uses_loaded_faster_whisper_capabilities(mod
     assert TTS_BACKENDS["qwen3"].kind == "tts"
     assert TTS_BACKENDS["openai"].kind == "tts"
     assert TTS_BACKENDS["supertonic"].required_extra == "supertonic"
+    assert TTS_BACKENDS["kitten"].required_extra == "kitten"
     assert LLM_BACKENDS["responses-api"].capabilities.supports_llm_proxy
     assert LLM_BACKENDS["chat-completions"].capabilities.supports_llm_proxy
     assert LLM_BACKENDS["chat-completions"].capabilities.supports_audio_input
@@ -352,6 +354,73 @@ def test_supertonic_cli_config_is_normalized_for_the_handler():
         "blocksize": 256,
         "gen_kwargs": {},
     }
+
+
+def test_kitten_cli_config_is_normalized_for_the_handler():
+    args = parse_arguments(
+        [
+            "--tts",
+            "kitten",
+            "--kitten_tts_voice",
+            "Bella",
+            "--use-cpu",
+            "--kitten_tts_blocksize",
+            "256",
+        ]
+    )
+
+    assert args.tts_backend.name == "kitten"
+    assert args.tts_backend.config == {
+        "model_name": "KittenML/kitten-tts-2",
+        "use_cpu": True,
+        "voice": "Bella",
+        "preset": "stable",
+        "weights": "packed",
+        "decoder": "default",
+        "default_language": "auto",
+        "ref_audio": None,
+        "ref_text": None,
+        "blocksize": 256,
+        "gen_kwargs": {},
+    }
+
+
+def test_kitten_canonical_use_cpu_flag_is_accepted():
+    # The prefixed flag is the canonical form; --use-cpu is an alias.
+    args = parse_arguments(["--tts", "kitten", "--kitten-tts-use-cpu"])
+
+    assert args.tts_backend.name == "kitten"
+    assert args.tts_backend.config["use_cpu"] is True
+
+
+def test_kitten_underscore_use_cpu_flag_is_accepted():
+    args = parse_arguments(["--tts", "kitten", "--use_cpu"])
+
+    assert args.tts_backend.name == "kitten"
+    assert args.tts_backend.config["use_cpu"] is True
+
+
+def test_kitten_json_config_accepts_unprefixed_use_cpu(tmp_path):
+    # JSON configs key on the unprefixed "use_cpu"; it must resolve instead of
+    # being silently dropped (which would quietly select the GPU/auto path).
+    config = tmp_path / "pipeline.json"
+    config.write_text(json.dumps({"tts": "kitten", "use_cpu": True}))
+
+    args = parse_arguments([str(config)])
+
+    assert args.tts_backend.name == "kitten"
+    assert args.tts_backend.config["use_cpu"] is True
+
+
+def test_kitten_json_config_prefers_canonical_use_cpu_key(tmp_path):
+    # When both spellings are present, the canonical prefixed key wins.
+    config = tmp_path / "pipeline.json"
+    config.write_text(json.dumps({"tts": "kitten", "use_cpu": True, "kitten_tts_use_cpu": False}))
+
+    args = parse_arguments([str(config)])
+
+    assert args.tts_backend.name == "kitten"
+    assert args.tts_backend.config["use_cpu"] is False
 
 
 def test_audio_input_validation_uses_registry_capability_not_backend_name():
